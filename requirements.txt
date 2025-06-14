@@ -1,0 +1,14 @@
+streamlit
+pandas
+openpyxl
+folium
+streamlit-folium
+geopandas
+numpy
+plotly
+sqlalchemy
+psycopg2-binary
+unidecode
+xlsxwriter
+reportlab
+Pillow
