@@ -12,3 +12,4 @@ unidecode
 xlsxwriter
 reportlab
 Pillow
+streamlit_lottie
