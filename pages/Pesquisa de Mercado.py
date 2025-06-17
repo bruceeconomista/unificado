@@ -505,6 +505,9 @@ with tab_consulta:
         st.markdown("### 📋 Resultados da Consulta")
         st.dataframe(st.session_state.df_cnpjs, use_container_width=True)
 
+        total_cnpjs_distintos = st.session_state.df_cnpjs['cnpj'].nunique()
+        st.markdown(f"**🔢 Total de CNPJs distintos encontrados:** {total_cnpjs_distintos:,}")
+
         st.download_button(
             label="📥 Baixar Resultados (.csv)",
             data=st.session_state.df_cnpjs.to_csv(index=False).encode("utf-8"),
@@ -557,160 +560,139 @@ def validate_n_meses(n_meses_str):
 # o 'with tab_pesquisa_mercado:' e assumir que o usuário o inserirá no contexto correto
 # (provavelmente dentro de uma função `def etapaX():` ou diretamente no script principal)
 
-st.header("📈 Pesquisa de Mercado (Novas Empresas)") # Mantido o header aqui
+with tab_pesquisa_mercado:
+    st.header("📈 Pesquisa de Mercado (Novas Empresas)")
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("Filtros Dedicados para Pesquisa de Mercado")
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Filtros Dedicados para Pesquisa de Mercado")
 
-# NOVO: Campo de input para Meses de Análise
-n_meses_analise_str = st.sidebar.text_input(
-    "Meses para Análise de Crescimento (1-120):",
-    value="24", # Valor padrão
-    key="input_meses_analise_pesquisa"
-)
-n_meses_analise = validate_n_meses(n_meses_analise_str)
-
-# NOVOS FILTROS DEDICADOS NA BARRA LATERAL
-filtro_uf_pesquisa = st.sidebar.multiselect(
-    "Filtrar por UF:",
-    options=st.session_state.df_cnpjs['uf'].unique().tolist() if 'df_cnpjs' in st.session_state and st.session_state.df_cnpjs is not None and 'uf' in st.session_state.df_cnpjs.columns else [],
-    key="filtro_uf_pesquisa"
-)
-filtro_municipio_pesquisa = st.sidebar.multiselect(
-    "Filtrar por Município:",
-    options=st.session_state.df_cnpjs['municipio'].unique().tolist() if 'df_cnpjs' in st.session_state and st.session_state.df_cnpjs is not None and 'municipio' in st.session_state.df_cnpjs.columns else [],
-    key="filtro_municipio_pesquisa"
-)
-filtro_nome_fantasia_pesquisa = st.sidebar.text_input(
-    "Palavras-chave no Nome Fantasia (opcional):",
-    help="Separe múltiplos termos com vírgula.",
-    key="filtro_nome_fantasia_pesquisa"
-)
-
-# REMOÇÃO DO SELECTBOX DE AGRUPAMENTO
-# opcoes_agrupamento = { ... } (removido)
-# agrupar_por_analise = st.sidebar.selectbox(...) (removido)
-# Fixamos o agrupamento por bairro:
-coluna_agrupamento = "bairro"
-agrupar_por_analise = "Bairro" # Nome "amigável" para exibição
-
-# Botão para gerar a pesquisa
-if st.sidebar.button("🚀 Gerar Pesquisa de Mercado", key="btn_gerar_pesquisa"):
-    # Validações dos inputs
-    if n_meses_analise is None:
-        st.error("Por favor, corrija os erros nos campos de filtro.")
-    elif not filtro_uf_pesquisa:
-        st.error("Por favor, selecione pelo menos um estado (UF).")
-    elif not filtro_municipio_pesquisa:
-        st.error("Por favor, selecione pelo menos um município.")
-    else:
-        st.session_state.resumo_crescimento = None # Limpa o estado anterior
-        st.session_state.df_oportunidades = None # Também limpa qualquer df_oportunidades anterior
-
-        data_limite = datetime.date.today() - datetime.timedelta(days=n_meses_analise * 30)
-
-        # --- Construção das cláusulas WHERE dos filtros dedicados ---
-        dedicated_filters_sql_clause = []
-
-        if filtro_uf_pesquisa:
-            ufs_str = "', '".join(filtro_uf_pesquisa)
-            dedicated_filters_sql_clause.append(f"uf IN ('{ufs_str}')")
-        if filtro_municipio_pesquisa:
-            # Assumindo que você quer unaccent também para o filtro de município
-            municipios_str = "', '".join(filtro_municipio_pesquisa)
-            dedicated_filters_sql_clause.append(f"unaccent(municipio) IN ('{municipios_str}')")
-        if filtro_nome_fantasia_pesquisa:
-            nomes_fantasia_termos = [f"%{termo.strip()}%" for termo in filtro_nome_fantasia_pesquisa.split(',')]
-            # Usando ILIKE para case-insensitive e unaccent para remover acentos
-            termos_ilike = [f"unaccent(nome_fantasia) ILIKE '{termo}'" for termo in nomes_fantasia_termos]
-            dedicated_filters_sql_clause.append(f"({' OR '.join(termos_ilike)})")
-        
-        # Concatena todas as condições dedicadas
-        final_dedicated_filter_sql = ""
-        if dedicated_filters_sql_clause:
-            final_dedicated_filter_sql = " AND " + " AND ".join(dedicated_filters_sql_clause)
-        # --- Fim da construção das cláusulas WHERE ---
-
-        # Lógica SQL para Crescimento (agora fixa por 'bairro')
-        sql_coluna_agrupamento_select = f"unaccent({coluna_agrupamento})"
-        sql_coluna_agrupamento_group_by = f"unaccent({coluna_agrupamento})"
-
-        sql_crescimento = f"""
-        SELECT
-            {sql_coluna_agrupamento_select} AS {coluna_agrupamento},
-            COUNT(cnpj) AS total_empresas
-        FROM
-            {TABELA}
-        WHERE
-            data_inicio_atividade >= '{data_limite.strftime('%Y-%m-%d')}'
-            AND situacao_cadastral = 'ATIVA'
-            AND {coluna_agrupamento} IS NOT NULL
-            {final_dedicated_filter_sql} -- Adiciona os filtros dedicados aqui
-        GROUP BY
-            {sql_coluna_agrupamento_group_by}
-        ORDER BY
-            total_empresas DESC
-        LIMIT 50;
-        """
-        
-        st.session_state.query_sql_display_crescimento = sql_crescimento
-
-        with st.spinner(f"Analisando crescimento nos últimos {n_meses_analise} meses..."):
-            try:
-                # Certifique-se que 'engine' está acessível aqui (conexão ao banco de dados)
-                raw_df_crescimento = run_query(sql_crescimento, engine)
-                
-                # Como agrupamento por CNAE foi removido desta pesquisa, simplificamos
-                st.session_state.resumo_crescimento = raw_df_crescimento
-                
-                st.success("Análise de crescimento concluída!")
-            except Exception as e:
-                st.error(f"Erro ao gerar a pesquisa de mercado: {e}")
-                st.session_state.resumo_crescimento = pd.DataFrame()
-
-# Exibição da Query SQL (mantido)
-if 'query_sql_display_crescimento' in st.session_state and st.session_state.query_sql_display_crescimento:
-    with st.expander("Ver a query SQL de Crescimento gerada", expanded=False):
-        st.code(st.session_state.query_sql_display_crescimento, language="sql")
-
-
-# Exibição dos resultados (ajustado para o novo plot_col_name e value_col_name fixos)
-if 'resumo_crescimento' in st.session_state and st.session_state.resumo_crescimento is not None and not st.session_state.resumo_crescimento.empty:
-    
-    # Agora fixos, já que o agrupamento é sempre por bairro
-    plot_col_name = "bairro" # Nome da coluna no DataFrame
-    value_col_name = "total_empresas" # Nome da coluna de contagem
-
-    st.markdown(f"### 📊 Top 30 Novas Empresas por {agrupar_por_analise} (últimos {n_meses_analise} meses)")
-
-    resumo_plot_df = st.session_state.resumo_crescimento.head(30)
-    
-    fig_crescimento = px.bar(
-        resumo_plot_df,
-        x=value_col_name,
-        y=plot_col_name,
-        orientation='h', # Orientação horizontal para bairros fica melhor geralmente
-        title=f"Top 30 Novas Empresas por {agrupar_por_analise} (últimos {n_meses_analise} meses)",
-        labels={value_col_name: "Número de Novas Empresas", plot_col_name: agrupar_por_analise},
-        hover_data=[] # Remove tooltips para CNAE (não CNAE aqui, mas mantido)
+    n_meses_analise_str = st.sidebar.text_input(
+        "Meses para Análise de Crescimento (1-120):",
+        value="24",
+        key="input_meses_analise_pesquisa"
     )
-    
-    fig_crescimento.update_layout(yaxis={'categoryorder':'total descending'}) # Para barras horizontais
-    fig_crescimento.update_xaxes(automargin=True) # Garante que os rótulos do eixo X se encaixem
+    n_meses_analise = validate_n_meses(n_meses_analise_str)
 
-    st.plotly_chart(fig_crescimento, use_container_width=True)
+    filtro_uf_pesquisa = st.sidebar.multiselect(
+        "Filtrar por UF:",
+        options=st.session_state.df_cnpjs['uf'].unique().tolist() if 'df_cnpjs' in st.session_state and st.session_state.df_cnpjs is not None and 'uf' in st.session_state.df_cnpjs.columns else [],
+        key="filtro_uf_pesquisa"
+    )
+    filtro_municipio_pesquisa = st.sidebar.multiselect(
+        "Filtrar por Município:",
+        options=st.session_state.df_cnpjs['municipio'].unique().tolist() if 'df_cnpjs' in st.session_state and st.session_state.df_cnpjs is not None and 'municipio' in st.session_state.df_cnpjs.columns else [],
+        key="filtro_municipio_pesquisa"
+    )
+    filtro_nome_fantasia_pesquisa = st.sidebar.text_input(
+        "Palavras-chave no Nome Fantasia (opcional):",
+        help="Separe múltiplos termos com vírgula.",
+        key="filtro_nome_fantasia_pesquisa"
+    )
 
-    with st.expander("📍 Resultado Detalhado da Pesquisa de Mercado", expanded=False):
-        st.markdown(f"### 📊 Crescimento por {agrupar_por_analise} (últimos {n_meses_analise} meses)")
-        st.dataframe(st.session_state.resumo_crescimento, use_container_width=True) # Mostra o completo
-        st.download_button(
-            label=f"📥 Baixar Crescimento por {agrupar_por_analise} (.csv)",
-            data=st.session_state.resumo_crescimento.to_csv().encode("utf-8"),
-            file_name=f"crescimento_empresas_{agrupar_por_analise}.csv",
-            mime="text/csv",
-            key="download_resultados_crescimento"
+    coluna_agrupamento = "bairro"
+    agrupar_por_analise = "Bairro"
+
+    if st.sidebar.button("🚀 Gerar Pesquisa de Mercado", key="btn_gerar_pesquisa"):
+        if n_meses_analise is None:
+            st.error("Por favor, corrija os erros nos campos de filtro.")
+        elif not filtro_uf_pesquisa:
+            st.error("Por favor, selecione pelo menos um estado (UF).")
+        elif not filtro_municipio_pesquisa:
+            st.error("Por favor, selecione pelo menos um município.")
+        else:
+            st.session_state.resumo_crescimento = None
+            st.session_state.df_oportunidades = None
+
+            data_limite = datetime.date.today() - datetime.timedelta(days=n_meses_analise * 30)
+
+            dedicated_filters_sql_clause = []
+
+            if filtro_uf_pesquisa:
+                ufs_str = "', '".join(filtro_uf_pesquisa)
+                dedicated_filters_sql_clause.append(f"uf IN ('{ufs_str}')")
+            if filtro_municipio_pesquisa:
+                municipios_str = "', '".join(filtro_municipio_pesquisa)
+                dedicated_filters_sql_clause.append(f"unaccent(municipio) IN ('{municipios_str}')")
+            if filtro_nome_fantasia_pesquisa:
+                nomes_fantasia_termos = [f"%{termo.strip()}%" for termo in filtro_nome_fantasia_pesquisa.split(',')]
+                termos_ilike = [f"unaccent(nome_fantasia) ILIKE '{termo}'" for termo in nomes_fantasia_termos]
+                dedicated_filters_sql_clause.append(f"({' OR '.join(termos_ilike)})")
+
+            final_dedicated_filter_sql = ""
+            if dedicated_filters_sql_clause:
+                final_dedicated_filter_sql = " AND " + " AND ".join(dedicated_filters_sql_clause)
+
+            sql_crescimento = f"""
+            SELECT
+                uf,
+                municipio,
+                unaccent({coluna_agrupamento}) AS {coluna_agrupamento},
+                COUNT(cnpj) AS total_empresas
+            FROM
+                {TABELA}
+            WHERE
+                data_inicio_atividade >= '{data_limite.strftime('%Y-%m-%d')}'
+                AND situacao_cadastral = 'ATIVA'
+                AND {coluna_agrupamento} IS NOT NULL
+                {final_dedicated_filter_sql}
+            GROUP BY
+                unaccent({coluna_agrupamento}), uf, municipio
+            ORDER BY
+                total_empresas DESC
+            LIMIT 10000;
+            """
+
+            st.session_state.query_sql_display_crescimento = sql_crescimento
+
+            with st.spinner(f"Analisando crescimento nos últimos {n_meses_analise} meses..."):
+                try:
+                    raw_df_crescimento = run_query(sql_crescimento, engine)
+                    st.session_state.resumo_crescimento = raw_df_crescimento
+                    st.success("Análise de crescimento concluída!")
+                except Exception as e:
+                    st.error(f"Erro ao gerar a pesquisa de mercado: {e}")
+                    st.session_state.resumo_crescimento = pd.DataFrame()
+
+    if 'query_sql_display_crescimento' in st.session_state and st.session_state.query_sql_display_crescimento:
+        with st.expander("Ver a query SQL de Crescimento gerada", expanded=False):
+            st.code(st.session_state.query_sql_display_crescimento, language="sql")
+
+    if 'resumo_crescimento' in st.session_state and st.session_state.resumo_crescimento is not None and not st.session_state.resumo_crescimento.empty:
+        plot_col_name = "bairro"
+        value_col_name = "total_empresas"
+
+        st.markdown(f"### 📊 Top 30 Novas Empresas por {agrupar_por_analise} (últimos {n_meses_analise} meses)")
+
+        resumo_plot_df = st.session_state.resumo_crescimento.head(30)
+
+        fig_crescimento = px.bar(
+            resumo_plot_df,
+            x=value_col_name,
+            y=plot_col_name,
+            orientation='h',
+            title=f"Top 30 Novas Empresas por {agrupar_por_analise} (últimos {n_meses_analise} meses)",
+            labels={value_col_name: "Número de Novas Empresas", plot_col_name: agrupar_por_analise},
+            hover_data=[]
         )
-elif 'resumo_crescimento' in st.session_state and st.session_state.resumo_crescimento is not None and st.session_state.resumo_crescimento.empty:
-    st.info(f"Nenhuma nova empresa encontrada para os filtros e período selecionados ({n_meses_analise} meses).")
-else:
-    st.info("Gere a pesquisa de mercado usando os filtros na barra lateral para ver os resultados aqui.")
+        fig_crescimento.update_layout(yaxis={'categoryorder': 'total descending'})
+        fig_crescimento.update_xaxes(automargin=True)
+
+        st.plotly_chart(fig_crescimento, use_container_width=True)
+
+        total_empresas_encontradas = resumo_plot_df[value_col_name].sum()
+        st.markdown(f"**🔢 Total de novas empresas encontradas:** {total_empresas_encontradas:,}")
+
+        with st.expander("📍 Resultado Detalhado da Pesquisa de Mercado", expanded=False):
+            st.markdown(f"### 📊 Crescimento por {agrupar_por_analise} (últimos {n_meses_analise} meses)")
+            st.dataframe(st.session_state.resumo_crescimento, use_container_width=True)
+            st.download_button(
+                label=f"📥 Baixar Crescimento por {agrupar_por_analise} (.csv)",
+                data=st.session_state.resumo_crescimento.to_csv().encode("utf-8"),
+                file_name=f"crescimento_empresas_{agrupar_por_analise}.csv",
+                mime="text/csv",
+                key="download_resultados_crescimento"
+            )
+    elif 'resumo_crescimento' in st.session_state and st.session_state.resumo_crescimento is not None and st.session_state.resumo_crescimento.empty:
+        st.info(f"Nenhuma nova empresa encontrada para os filtros e período selecionados ({n_meses_analise} meses).")
+    else:
+        st.info("Gere a pesquisa de mercado usando os filtros na barra lateral para ver os resultados aqui.")
