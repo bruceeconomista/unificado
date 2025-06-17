@@ -15,7 +15,7 @@ from unidecode import unidecode
 st.set_page_config(layout="wide", page_title="Diagnóstico e Oportunidades")
 st.title("📊 Diagnóstico e Mapa de Oportunidades")
 
-DATABASE_URL = "postgresql+psycopg2://postgres:0804Bru%21%40%23%24@localhost:5432/empresas"
+DATABASE_URL = 
 
 # Funções auxiliares
 
