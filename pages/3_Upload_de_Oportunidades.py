@@ -1,3 +1,4 @@
+
 # CÓDIGO FINAL COM TODAS AS ETAPAS, BOTÕES, ESTILO MODERNO E CORREÇÕES
 
 import streamlit as st
@@ -36,7 +37,7 @@ def buscar_dados_enriquecidos(cnpjs):
     return df
 
 # Inicialização
-for key in ["df_oportunidades", "df_coords"]:
+for key in ["df_oportunidades", "df_coords", "df_coords_tipo"]:
     if key not in st.session_state:
         st.session_state[key] = None
 
@@ -46,6 +47,7 @@ st.header("3️⃣ Upload do Universo de Oportunidades e Coordenadas")
 if st.button("🔄 Refazer Uploads"):
     st.session_state.df_oportunidades = None
     st.session_state.df_coords = None
+    st.session_state.df_coords_tipo = None
     st.rerun()
 
 # Se já estiverem carregados
@@ -69,13 +71,33 @@ else:
         st.success("Base de oportunidades carregada.")
         st.dataframe(df.head())
 
-    coords_file = st.file_uploader("Upload do arquivo com coordenadas", type=["csv", "xlsx"], key="upload_coords")
+    coords_file = st.file_uploader("Upload do arquivo com coordenadas (por CEP ou por Bairro)", type=["csv", "xlsx"], key="upload_coords")
     if coords_file:
-        df = pd.read_csv(coords_file, sep=';', dtype=str) if coords_file.name.endswith(".csv") else pd.read_excel(coords_file, dtype=str)
+        try:
+            if coords_file.name.endswith(".csv"):
+                df = pd.read_csv(coords_file, dtype=str)
+            else:
+                df = pd.read_excel(coords_file, dtype=str)
+        except Exception as e:
+            st.error(f"Erro ao carregar o arquivo de coordenadas: {e}")
+            st.stop()
+
         df.columns = df.columns.str.strip().str.lower()
         df.rename(columns={'município': 'municipio'}, inplace=True)
+
+        # Diagnóstico: CEP ou Bairro?
+        if 'cep' in df.columns and {'latitude', 'longitude'}.issubset(df.columns):
+            tipo_coord = 'cep'
+        elif {'uf', 'municipio', 'bairro', 'latitude', 'longitude'}.issubset(df.columns):
+            tipo_coord = 'bairro'
+        else:
+            st.error("O arquivo de coordenadas deve conter colunas para CEP ou para Bairro com latitude e longitude.")
+            st.stop()
+
         st.session_state.df_coords = df
-        st.success("Base de coordenadas carregada.")
+        st.session_state.df_coords_tipo = tipo_coord  # salvar o tipo de coordenada
+
+        st.success(f"Base de coordenadas por {tipo_coord.upper()} carregada.")
         st.dataframe(df.head())
 
     if st.session_state.df_oportunidades is not None and st.session_state.df_coords is not None:
