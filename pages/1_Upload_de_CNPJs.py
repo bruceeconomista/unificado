@@ -28,9 +28,13 @@ def buscar_dados_enriquecidos(cnpjs):
     engine = create_engine(DATABASE_URL)
     with engine.connect() as conn:
         query = text("""
-            SELECT *
-            FROM visao_empresa_completa
-            WHERE cnpj = ANY(:cnpjs)
+            SELECT v.*,
+                   c1.cod_cnae AS cnae_principal_cod,
+                   c2.cod_cnae AS cnae_secundario_cod
+            FROM visao_empresa_completa v
+            LEFT JOIN tb_cnae c1 ON unaccent(upper(v.cnae_principal)) = unaccent(upper(c1.descricao))
+            LEFT JOIN tb_cnae c2 ON unaccent(upper(v.cnae_secundario)) = unaccent(upper(c2.descricao))
+            WHERE v.cnpj = ANY(:cnpjs)
         """).bindparams(cnpjs=ARRAY(String))
         df = pd.read_sql(query, conn, params={"cnpjs": cnpjs})
     return df
