@@ -35,7 +35,17 @@ if df_oportunidades.empty:
 
 if tipo_coords == "cep":
     df_oportunidades['cep'] = df_oportunidades['cep'].astype(str).str.zfill(8)
-    grupo = df_oportunidades.groupby('cep').size().reset_index(name='qtd_oportunidades')
+
+    #grupo = df_oportunidades.groupby('cep').size().reset_index(name='qtd_oportunidades') - TRECHO SUBSTITUÍDO POR
+
+    df_oportunidades['capital_social'] = pd.to_numeric(df_oportunidades['capital_social'], errors='coerce').fillna(0)
+    grupo = df_oportunidades.groupby('cep').agg(
+    qtd_oportunidades=('cnpj', 'count'),
+    capital_total=('capital_social', 'sum')
+    ).reset_index()
+
+    # FIM DA SUBSTITUIÇÃO
+
     df_coords['cep'] = df_coords['cep'].astype(str).str.zfill(8)
     df_mapa = pd.merge(grupo, df_coords[['cep', 'latitude', 'longitude']], on='cep', how='left')
 
@@ -73,21 +83,61 @@ if df_mapa.empty:
     st.warning("Nenhuma coordenada válida encontrada. Não foi possível gerar o mapa.")
     st.stop()
 
-fig = px.scatter_map(
-    df_mapa,
-    lat='latitude',
-    lon='longitude',
-    size='qtd_oportunidades',
-    color='qtd_oportunidades',
-    color_continuous_scale=px.colors.sequential.Plasma_r,
-    hover_name=hover,
-    map_style="open-street-map",
-    size_max=50,
-    zoom=4,
-    height=700
+# Seletor interativo
+visualizacao = st.radio(
+    "🔍 Visualizar oportunidades por:",
+    ["Quantidade de Empresas", "Capital Social"]
 )
 
-st.plotly_chart(fig, use_container_width=True)
+# Configuração do mapa dependendo da escolha
+if visualizacao == "Quantidade de Empresas":
+    fig = px.scatter_mapbox(
+        df_mapa,
+        lat='latitude',
+        lon='longitude',
+        size='qtd_oportunidades',
+        color='qtd_oportunidades',
+        color_continuous_scale=px.colors.sequential.Plasma_r,
+        hover_name=hover,
+        mapbox_style="open-street-map",
+        template="plotly_dark",
+        size_max=50,
+        zoom=4,
+        height=700
+    )
+    fig.update_traces(
+        hovertemplate="<b>%{hovertext}</b><br>" +
+                      "Qtd Oportunidades: %{marker.size:,}<br><extra></extra>"
+    )
+
+elif visualizacao == "Capital Social":
+    fig = px.scatter_mapbox(
+        df_mapa,
+        lat='latitude',
+        lon='longitude',
+        size='capital_total',
+        color='qtd_oportunidades',
+        color_continuous_scale=px.colors.sequential.Plasma_r,
+        hover_name=hover,
+        mapbox_style="open-street-map",
+        template="plotly_dark",
+        size_max=50,
+        zoom=4,
+        height=700
+    )
+    fig.update_traces(
+        hovertemplate="<b>%{hovertext}</b><br>" +
+                      "Capital Total: R$ %{marker.size:,.2f}<br><extra></extra>"
+    )
+
+fig.update_layout(
+    dragmode="zoom",
+    uirevision="keep",
+    mapbox=dict(accesstoken=None)
+)
+
+st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
+
 
 st.success(f"Mapa gerado com {len(df_mapa)} localizações e {df_oportunidades.shape[0]} oportunidades não atendidas.")
 
