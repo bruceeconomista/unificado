@@ -12,7 +12,7 @@ st.set_page_config(layout="wide", page_title="Consulta Avançada de CNPJs + Pesq
 st.title("🔍 Consulta Avançada de Empresas com Filtros SQL")
 
 # --- Conexão com banco de dados ---
-DATABASE_URL = 
+DATABASE_URL = "postgresql+psycopg2://postgres:0804Bru%21%40%23%24@localhost:5432/empresas"
 TABELA = "visao_empresa_completa"
 
 
@@ -161,10 +161,34 @@ def montar_sql(f, limit):
         if f.get(key) is not None:
             op = ">=" if 'min' in key else "<="
             where.append(f"DATE_PART('year', AGE(CURRENT_DATE, data_inicio_atividade)) {op} {f[key]}")
+    
+    if f.get('cod_cnae_termos'): #ADICIONADO
+        termos_cnae = [t.strip() for t in f['cod_cnae_termos'] if t.strip()]
+        if termos_cnae:
+            termos_str = ','.join(f"'{t}'" for t in termos_cnae)
+            where.append(f"(cnae_pri.cod_cnae IN ({termos_str}) OR cnae_sec.cod_cnae IN ({termos_str}))")
 
-    sql = f"SELECT * FROM {TABELA}"
+    if f.get('opcao_simples') in ['S', 'N']:
+        where.append(f"opcao_simples = '{f['opcao_simples']}'")    
+
+    if f.get('opcao_mei') in ['S', 'N']:
+        where.append(f"opcao_mei = '{f['opcao_mei']}'")                
+
+    sql = f"""
+    SELECT 
+        vc.*, 
+        cnae_pri.cod_cnae AS cod_cnae_principal, 
+        cnae_sec.cod_cnae AS cod_cnae_secundario
+    FROM {TABELA} vc
+    LEFT JOIN tb_cnae cnae_pri 
+        ON unaccent(vc.cnae_principal) = unaccent(cnae_pri.descricao)
+    LEFT JOIN tb_cnae cnae_sec 
+        ON unaccent(vc.cnae_secundario) = unaccent(cnae_sec.descricao)
+    """
+
     if where:
         sql += " WHERE " + " AND ".join(where)
+
     sql += f" LIMIT {limit};"
     return sql
 
@@ -414,8 +438,10 @@ with tab_consulta:
         st.subheader("Filtros de Texto e CNAE")
         nome_fantasia_input = st.text_input("Nome Fantasia (termos separados por vírgula)", help="Ex: 'mercado, padaria'", key="nome_fantasia_input")
         cnaes_input = st.text_input("CNAE (código ou descrição, termos separados por vírgula)", help="Ex: '4711, comércio varejista'", key="cnaes_input")
+        cod_cnae_input = st.text_input("Códigos CNAE (somente numéricos, separados por vírgula)",help="Ex: '4711-3/02, 5611-2/01'",key="cod_cnae_input") #INCLUSÃO FILTRO CNAE
         natureza_juridica_input = st.text_input("Natureza Jurídica (código ou descrição, termos separados por vírgula)", help="Ex: '206-2, Sociedade Empresária Limitada'", key="natureza_juridica_input")
-
+        opcao_simples = st.selectbox("Optante pelo Simples?",options=["", "S", "N"],index=0,help="Deixe em branco para não filtrar",key="opcao_simples")
+        opcao_mei = st.selectbox("Optante pelo MEI?",options=["", "S", "N"],index=0,help="Deixe em branco para não filtrar",key="opcao_mei")
 
     with col2:
         st.subheader("Filtros de Localização")
@@ -466,7 +492,10 @@ with tab_consulta:
         filtros = {
             'nome_fantasia_termos': [t.strip() for t in nome_fantasia_input.split(',') if t.strip()],
             'cnaes_termos': [t.strip() for t in cnaes_input.split(',') if t.strip()],
+            'cod_cnae_termos': [t.strip() for t in cod_cnae_input.split(',') if t.strip()], #ADICIONADO
             'natureza_juridica_termos': [t.strip() for t in natureza_juridica_input.split(',') if t.strip()],
+            'opcao_simples': opcao_simples,
+            'opcao_mei': opcao_mei,
             'uf_selecionada': uf_selecionada,
             'municipio_termos': [t.strip() for t in municipio_input.split(',') if t.strip()],
             'bairro_termos': [t.strip() for t in bairro_input.split(',') if t.strip()],
