@@ -32,7 +32,7 @@ PONTUACAO_PARAMETROS = {
     'faixa_etaria_socio': 5
 }
 
-# Adicione @st.cache_data às funções que processam df_clientes
+# --- Funções de Caching ---
 @st.cache_data
 def to_excel(df):
     output = BytesIO()
@@ -40,7 +40,6 @@ def to_excel(df):
         df.to_excel(writer, index=False)
     return output.getvalue()
 
-# MODIFICADO: Função para incluir opção de NULL/Vazio separadamente e garantir que não são cortados pelo top_n
 @st.cache_data
 def get_unique_values(df, column, top_n=None, include_null=False, include_empty=False):
     if column not in df.columns:
@@ -74,7 +73,6 @@ def get_unique_values(df, column, top_n=None, include_null=False, include_empty=
         return list(dict.fromkeys(filtered_list)) # Remove duplicatas e mantém ordem
     return unique_values_list
 
-# MODIFICADO: Função para incluir opção de NULL/Vazio para palavras-chave (nome fantasia) e garantir que não são cortados pelo top_n
 @st.cache_data
 def get_top_n_words(df, column, top_n, stop_words, include_null=False, include_empty=False):
     if column not in df.columns:
@@ -91,33 +89,27 @@ def get_top_n_words(df, column, top_n, stop_words, include_null=False, include_e
         words = [word for word in text.split() if word not in stop_words and len(word) > 1]
         return words
 
-    # Processa apenas os valores válidos para extrair palavras
-    # Filtra explicitamente NaN e strings vazias antes de aplicar a função de limpeza
     temp_series_non_null_empty = df[column][df[column].notna() & (df[column].astype(str).str.strip() != "")].apply(clean_and_tokenize).explode()
     all_words.extend(temp_series_non_null_empty.dropna().tolist())
 
-    # Contagem de palavras reais
     word_counts = Counter(all_words)
     common_words = [word for word, count in word_counts.most_common(top_n)]
 
-    # Adiciona (Nulo) e (Vazio) se as flags estiverem ativas e houver ocorrências
     if include_null and df[column].isna().any():
-        if "(Nulo)" not in common_words: # Evita adicionar duplicatas se já estiver nos top_n
+        if "(Nulo)" not in common_words:
             common_words.append("(Nulo)")
     if include_empty and (df[column].astype(str).str.strip() == "").any():
-        if "(Vazio)" not in common_words: # Evita adicionar duplicatas
+        if "(Vazio)" not in common_words:
             common_words.append("(Vazio)")
 
     return common_words
 
-# MODIFICADO: Função para incluir opção de NULL/Vazio para CNAEs e garantir que não são cortados pelo top_n
 @st.cache_data
 def get_top_n_cnaes(df, cnae_type, top_n, include_null=False, include_empty=False):
     all_cnaes_info = []
 
     def add_cnaes_from_columns(codes_col, descriptions_col):
         if codes_col in df.columns and descriptions_col in df.columns:
-            # Filtra apenas linhas onde o código CNAE não é NaN e não é string vazia para processamento
             valid_cnae_rows = df[df[codes_col].notna() & (df[codes_col].astype(str).str.strip() != "")]
             for _, row in valid_cnae_rows.iterrows():
                 codes_str = str(row[codes_col]).strip()
@@ -139,14 +131,11 @@ def get_top_n_cnaes(df, cnae_type, top_n, include_null=False, include_empty=Fals
         add_cnaes_from_columns('cnae_secundario_cod', 'cnae_secundario')
     
     if not all_cnaes_info:
-        # Se não há CNAEs reais, mas pedimos Nulo/Vazio, ainda assim os adicionamos
         common_cnaes = []
     else:
         cnae_pair_counts = Counter(all_cnaes_info)
         common_cnaes = [(code, desc) for (code, desc), freq in cnae_pair_counts.most_common(top_n)]
 
-    # Adiciona (Nulo) e (Vazio) se as flags estiverem ativas e houver ocorrências
-    # Verifica a coluna de código correspondente na DF original
     if cnae_type == 'principal' or cnae_type == 'ambos':
         if include_null and df['cnae_principal_cod'].isna().any():
             if ("(Nulo)", "(Nulo)") not in common_cnaes:
@@ -166,8 +155,6 @@ def get_top_n_cnaes(df, cnae_type, top_n, include_null=False, include_empty=Fals
     return common_cnaes
 
 # --- FUNÇÃO PRINCIPAL DE GERAÇÃO DA QUERY SQL ---
-# CORRIGIDO: Reintroduz os JOINs para tb_cnae e usa os aliases corretos para os códigos CNAE.
-# MODIFICADO: Lógica para incluir NULL e Vazio separadamente
 def generate_sql_query(params, excluded_cnpjs_set=None):
     base_query = "SELECT vec.*"
     joins = []
@@ -195,11 +182,8 @@ def generate_sql_query(params, excluded_cnpjs_set=None):
         'faixa_etaria_socio': 'vec.faixa_etaria_socio'
     }
 
-    # Adiciona JOINs e SELECTs para CNAE apenas se houver critérios de CNAE selecionados
-    # ou se forem os únicos parâmetros ativos (mesmo que sejam nulos/vazios)
     if ('cod_cnae_principal' in params and params['cod_cnae_principal']) or \
        ('cod_cnae_secundario' in params and params['cod_cnae_secundario']):
-        # Evita adicionar os mesmos joins duas vezes se ambos CNAEs forem selecionados
         if "LEFT JOIN tb_cnae tc_principal ON unaccent(upper(vec.cnae_principal)) = unaccent(upper(tc_principal.descricao))" not in joins:
             base_query += ", tc_principal.cod_cnae AS cod_cnae_principal_found"
             joins.append("LEFT JOIN tb_cnae tc_principal ON unaccent(upper(vec.cnae_principal)) = unaccent(upper(tc_principal.descricao))")
@@ -209,15 +193,13 @@ def generate_sql_query(params, excluded_cnpjs_set=None):
 
 
     for param, value in params.items():
-        # AQUI É ONDE A LÓGICA DEVE GARANTIR QUE VALORES VAZIOS/NULOS DE PARAMETROS DESMARCADOS NÃO ENTRAM
         if value is None or (isinstance(value, list) and not value) or (isinstance(value, tuple) and not all(value)):
-            continue # Ignora parâmetros que estão vazios ou None
+            continue
             
         if param != 'situacao_cadastral': 
             col_name = col_map.get(param)
             param_conditions = []
             
-            # --- Lógica para campos que usam get_unique_values ---
             if param in ['uf', 'municipio', 'bairro', 'natureza_juridica',
                             'qualificacao_socio', 'faixa_etaria_socio', 'ddd1',
                             'porte_empresa', 'opcao_simples', 'opcao_mei']:
@@ -244,7 +226,6 @@ def generate_sql_query(params, excluded_cnpjs_set=None):
                 if param_conditions:
                     conditions.append(f"({' OR '.join(param_conditions)})")
 
-            # --- Lógica para nome_fantasia (usa ILIKE para palavras-chave) ---
             elif param == 'nome_fantasia':
                 actual_words = [w for w in value if w != "(Nulo)" and w != "(Vazio)"]
                 include_null_condition = "(Nulo)" in value
@@ -265,7 +246,6 @@ def generate_sql_query(params, excluded_cnpjs_set=None):
                 if word_search_conditions:
                     conditions.append(f"({' OR '.join(word_search_conditions)})")
 
-            # --- Lógica para CNAE Principal ---
             elif param == 'cod_cnae_principal':
                 codes_list = [code for code, _ in value if code != "(Nulo)" and code != "(Vazio)"]
                 include_null_cnae_p = any(code == "(Nulo)" for code, _ in value)
@@ -275,12 +255,10 @@ def generate_sql_query(params, excluded_cnpjs_set=None):
                 cnae_principal_col_alias = col_map.get('cod_cnae_principal') 
                 for code in codes_list:
                     param_name = f"cnae_pr_code_{code.replace('.', '_')}_{param_counter}"
-                    # Usa o alias do JOIN para os códigos CNAE válidos
                     main_cnae_conditions.append(f"{cnae_principal_col_alias} = :{param_name}")
                     query_params[param_name] = code.replace("'", "''")
                     param_counter += 1
                 
-                # Para NULL e Vazio, usa a coluna original da vec
                 if include_null_cnae_p:
                     main_cnae_conditions.append(f"vec.cnae_principal IS NULL") 
                 if include_empty_cnae_p:
@@ -289,7 +267,6 @@ def generate_sql_query(params, excluded_cnpjs_set=None):
                 if main_cnae_conditions:
                     conditions.append(f"({' OR '.join(main_cnae_conditions)})")
 
-            # --- Lógica para CNAE Secundário ---
             elif param == 'cod_cnae_secundario':
                 codes_list = [code for code, _ in value if code != "(Nulo)" and code != "(Vazio)"]
                 include_null_cnae_s = any(code == "(Nulo)" for code, _ in value)
@@ -299,12 +276,10 @@ def generate_sql_query(params, excluded_cnpjs_set=None):
                 cnae_sec_col_alias = col_map.get('cod_cnae_secundario') 
                 for code in codes_list:
                     param_name = f"cnae_sec_code_{code.replace('.', '_')}_{param_counter}"
-                    # Usa ILIKE para CNAE secundário nos valores reais
                     secondary_cnae_like_conditions.append(f"{cnae_sec_col_alias} ILIKE :{param_name}")
                     query_params[param_name] = f'%{code.replace("'", "''")}%'
                     param_counter += 1
                 
-                # Para NULL e Vazio, usa a coluna original da vec
                 if include_null_cnae_s:
                     secondary_cnae_like_conditions.append(f"vec.cnae_secundario IS NULL") 
                 if include_empty_cnae_s:
@@ -313,7 +288,6 @@ def generate_sql_query(params, excluded_cnpjs_set=None):
                 if secondary_cnae_like_conditions:
                     conditions.append(f"({' OR '.join(secondary_cnae_like_conditions)})")
             
-            # --- Lógica para Data Início Atividade ---
             elif param == 'data_inicio_atividade':
                 col_name = col_map.get(param)
                 start_date, end_date = value
@@ -324,7 +298,6 @@ def generate_sql_query(params, excluded_cnpjs_set=None):
                 query_params[param_name_end] = end_date
                 param_counter += 1
 
-            # --- Lógica para Capital Social ---
             elif param == 'capital_social':
                 col_name = col_map.get(param)
                 min_val, max_val = value
@@ -335,7 +308,6 @@ def generate_sql_query(params, excluded_cnpjs_set=None):
                 query_params[param_name_max] = max_val
                 param_counter += 1
             
-            # --- Lógica para Nome Sócio / Razão Social (busca por similaridade) ---
             elif param == 'nome_socio_razao_social':
                 col_name = col_map.get(param)
                 actual_name_parts = [p for p in value if p != "(Nulo)" and p != "(Vazio)"]
@@ -357,10 +329,8 @@ def generate_sql_query(params, excluded_cnpjs_set=None):
                 if sub_conditions:
                     conditions.append(f"({' OR '.join(sub_conditions)})")
 
-    # Adiciona a condição de exclusão de CNPJs já atendidos
     if excluded_cnpjs_set:
         param_name_excluded_cnpjs = f"excluded_cnpjs_{param_counter}"
-        # Para o SQLAlchemy, passar uma tupla diretamente é a forma mais robusta de lidar com IN
         conditions.append(f"vec.cnpj NOT IN ({', '.join([f':{param_name_excluded_cnpjs}_{i}' for i in range(len(excluded_cnpjs_set))])})")
         for i, c in enumerate(list(excluded_cnpjs_set)):
             query_params[f"{param_name_excluded_cnpjs}_{i}"] = c
@@ -415,8 +385,6 @@ def ensure_leads_table_exists(df_to_save, table_name='tb_leads_gerados', engine=
                         'opcao_simples', 'opcao_mei', 'situacao_cadastral', 'nome_socio',
                         'qualificacao_socio', 'faixa_etaria_socio', 'cliente_referencia']:
                 if col in df_temp.columns:
-                    # Melhor forma de tratar NaN para strings antes de to_sql:
-                    # Converte para string e depois para None (para SQL NULL)
                     df_temp[col] = df_temp[col].astype(str).replace({pd.NA: None, 'nan': None, '':None}).apply(lambda x: x if x is not None else None)
             
             if 'data_inicio_atividade' in df_temp.columns:
@@ -493,9 +461,15 @@ if 'df_cnpjs' not in st.session_state or st.session_state.df_cnpjs is None:
     st.info("Você será redirecionado para a Etapa 1.")
     st.stop()
 
-df_clientes = st.session_state.df_cnpjs # Esta é a base de clientes existente do seu cliente!
+df_clientes = st.session_state.df_cnpjs
 cnpjs_para_excluir = set(df_clientes['cnpj'].dropna().astype(str).tolist()) if 'cnpj' in df_clientes.columns else set()
 
+# Initialize custom_tags in session_state if not already present
+if 'custom_tags_nf' not in st.session_state:
+    st.session_state.custom_tags_nf = []
+if 'custom_tags_uf' not in st.session_state:
+    st.session_state.custom_tags_uf = []
+# ... adicione para outros campos que precisarão de custom tags
 
 st.markdown("## ⚙️ Configuração dos Parâmetros de Busca")
 
@@ -504,23 +478,21 @@ cliente_referencia = st.text_input("Nome ou ID do Cliente para esta Geração de
 if not cliente_referencia:
     st.warning("Por favor, insira um nome ou ID para o cliente antes de gerar leads.")
 
-# Reinicia ia_params a cada execução para garantir que apenas parâmetros ativos sejam considerados.
 ia_params = {}
 current_score = 0
 
-col1, col2 = st.columns(2)
+# --- Critérios de Identificação de Perfil ---
+st.subheader("Critérios de Identificação de Perfil")
 
-with col1:
-    st.subheader("Critérios de Identificação de Perfil")
-
+# --- Nome Fantasia ---
+col1_nf, col2_nf, col3_nf = st.columns([1, 1, 2])
+with col1_nf:
     use_nome_fantasia = st.checkbox("Incluir Palavras-Chave (Nome Fantasia)", value=True)
+with col2_nf:
+    include_null_nf = st.checkbox("Nulo?", key="ia_nf_null") if use_nome_fantasia else False
+    include_empty_nf = st.checkbox("Vazio?", key="ia_nf_empty") if use_nome_fantasia else False
+with col3_nf:
     if use_nome_fantasia:
-        col_nf_null, col_nf_empty = st.columns(2)
-        with col_nf_null:
-            include_null_nf = st.checkbox("Incluir Nulo (Nome Fantasia)?", key="ia_nf_null")
-        with col_nf_empty:
-            include_empty_nf = st.checkbox("Incluir Vazio (Nome Fantasia)?", key="ia_nf_empty")
-        
         top_n_nf = st.slider("Top N palavras mais frequentes:", min_value=1, max_value=50, value=10, key="ia_top_nf")
         stop_words = set(unidecode(word.lower()) for word in [
             "e", "de", "do", "da", "dos", "das", "o", "a", "os", "as", "um", "uma", "uns", "umas",
@@ -529,61 +501,138 @@ with col1:
             "desde", "até", "após", "entre", "sob", "sobre", "ante", "após", "contra",
             "desde", "durante", "entre", "mediante", "perante", "salvo", "sem", "sob", "sobre", "trás",
             "s.a", "sa", "ltda", "me", "eireli", "epp", "s.a.", "ltda.", "me.", "eireli.", "epp.",
-            "sa.", "ltda.", "me.", "eireli.", "epp.", "s/a", "comercio", "servicos", "serviços", "brasil", "brasileira"              
+            "sa.", "ltda.", "me.", "eireli.", "epp.", "comercio", "servicos", "serviços", "brasil", "brasileira"              
         ])
         top_nf_words = get_top_n_words(df_clientes, 'nome_fantasia', top_n_nf, stop_words, include_null=include_null_nf, include_empty=include_empty_nf)
-        if top_nf_words:
-            ia_params['nome_fantasia'] = st.multiselect("Palavras-chave selecionadas:", options=top_nf_words, default=top_nf_words, key="ia_nf_select")
-        else:
-            st.info("Nenhuma palavra-chave relevante encontrada no nome fantasia dos clientes.")
-            ia_params['nome_fantasia'] = [] # Garante que seja uma lista vazia se não houver palavras
+        
+        # Combinar palavras top N com tags customizadas
+        all_nf_options = list(set(top_nf_words + st.session_state.custom_tags_nf))
+        # Remover (Nulo) e (Vazio) da lista de opções antes do sort, para que fiquem no final se selecionados
+        temp_options = [opt for opt in all_nf_options if opt not in ["(Nulo)", "(Vazio)"]]
+        temp_options.sort()
+        if "(Nulo)" in all_nf_options: temp_options.append("(Nulo)")
+        if "(Vazio)" in all_nf_options: temp_options.append("(Vazio)")
+
+        default_nf_selection = list(set(top_nf_words + [t for t in st.session_state.custom_tags_nf if t in temp_options]))
+        if include_null_nf and "(Nulo)" in temp_options: default_nf_selection.append("(Nulo)")
+        if include_empty_nf and "(Vazio)" in temp_options: default_nf_selection.append("(Vazio)")
+
+        selected_nf_words = st.multiselect(
+            "Palavras-chave selecionadas:",
+            options=temp_options,
+            default=default_nf_selection,
+            key="ia_nf_select"
+        )
+        ia_params['nome_fantasia'] = selected_nf_words if selected_nf_words else []
+
+        new_nf_tag = st.text_input("Adicionar nova palavra-chave:", key="new_nf_tag_input")
+        if new_nf_tag and st.button("Adicionar Tag (Nome Fantasia)", key="add_nf_tag_button"):
+            # Adicionar a nova tag se não for vazia e não estiver duplicada
+            if new_nf_tag.strip() not in st.session_state.custom_tags_nf:
+                st.session_state.custom_tags_nf.append(new_nf_tag.strip())
+                st.rerun() # Reruns to update the multiselect options
     else:
-        ia_params['nome_fantasia'] = [] # Explicitamente define como vazio se desmarcado
+        ia_params['nome_fantasia'] = []
 
+st.divider() # ou st.markdown("---")
+
+# --- UF ---
+col1_uf, col2_uf, col3_uf = st.columns([1, 1, 2])
+with col1_uf:
     use_uf = st.checkbox("Incluir UF", value=True)
+with col2_uf:
+    include_null_uf = st.checkbox("Nulo?", key="ia_uf_null") if use_uf else False
+    include_empty_uf = st.checkbox("Vazio?", key="ia_uf_empty") if use_uf else False
+with col3_uf:
     if use_uf:
-        col_uf_null, col_uf_empty = st.columns(2)
-        with col_uf_null:
-            include_null_uf = st.checkbox("Incluir UF Nula?", key="ia_uf_null")
-        with col_uf_empty:
-            include_empty_uf = st.checkbox("Incluir UF Vazia?", key="ia_uf_empty")
-
         top_n_uf = st.slider("Top N UFs mais frequentes:", min_value=1, max_value=27, value=5, key="ia_top_uf")
         top_ufs = get_unique_values(df_clientes, 'uf', top_n_uf, include_null=include_null_uf, include_empty=include_empty_uf)
-        if top_ufs:
-            ia_params['uf'] = st.multiselect("UFs selecionadas:", options=top_ufs, default=top_ufs, key="ia_uf_select")
-        else:
-            st.info("Nenhuma UF relevante encontrada.")
-            ia_params['uf'] = []
+        
+        all_uf_options = list(set(top_ufs + st.session_state.custom_tags_uf))
+        temp_options = [opt for opt in all_uf_options if opt not in ["(Nulo)", "(Vazio)"]]
+        temp_options.sort()
+        if "(Nulo)" in all_uf_options: temp_options.append("(Nulo)")
+        if "(Vazio)" in all_uf_options: temp_options.append("(Vazio)")
+
+        default_uf_selection = list(set(top_ufs + [t for t in st.session_state.custom_tags_uf if t in temp_options]))
+        if include_null_uf and "(Nulo)" in temp_options: default_uf_selection.append("(Nulo)")
+        if include_empty_uf and "(Vazio)" in temp_options: default_uf_selection.append("(Vazio)")
+
+        selected_ufs = st.multiselect(
+            "UFs selecionadas:",
+            options=temp_options,
+            default=default_uf_selection,
+            key="ia_uf_select"
+        )
+        ia_params['uf'] = selected_ufs if selected_ufs else []
+
+        new_uf_tag = st.text_input("Adicionar nova UF:", key="new_uf_tag_input")
+        if new_uf_tag and st.button("Adicionar Tag (UF)", key="add_uf_tag_button"):
+            if new_uf_tag.strip().upper() not in st.session_state.custom_tags_uf:
+                st.session_state.custom_tags_uf.append(new_uf_tag.strip().upper())
+                st.rerun()
     else:
-        ia_params['uf'] = [] # Explicitamente define como vazio se desmarcado
+        ia_params['uf'] = []
 
+st.divider() # ou st.markdown("---")
+    
+# --- Município ---
+# Initialize custom_tags_municipio
+if 'custom_tags_municipio' not in st.session_state:
+    st.session_state.custom_tags_municipio = []
+
+col1_mun, col2_mun, col3_mun = st.columns([1, 1, 2])
+with col1_mun:
     use_municipio = st.checkbox("Incluir Município", value=True)
+with col2_mun:
+    include_null_municipio = st.checkbox("Nulo?", key="ia_municipio_null") if use_municipio else False
+    include_empty_municipio = st.checkbox("Vazio?", key="ia_municipio_empty") if use_municipio else False
+with col3_mun:
     if use_municipio:
-        col_mun_null, col_mun_empty = st.columns(2)
-        with col_mun_null:
-            include_null_municipio = st.checkbox("Incluir Município Nulo?", key="ia_municipio_null")
-        with col_mun_empty:
-            include_empty_municipio = st.checkbox("Incluir Município Vazio?", key="ia_municipio_empty")
-
         top_n_municipio = st.slider("Top N Municípios mais frequentes:", min_value=1, max_value=50, value=10, key="ia_top_municipio")
         top_municipios = get_unique_values(df_clientes, 'municipio', top_n_municipio, include_null=include_null_municipio, include_empty=include_empty_municipio)
-        if top_municipios:
-            ia_params['municipio'] = st.multiselect("Municípios selecionados:", options=top_municipios, default=top_municipios, key="ia_municipio_select")
-        else:
-            st.info("Nenhum Município relevante encontrado.")
-            ia_params['municipio'] = []
+
+        all_municipio_options = list(set(top_municipios + st.session_state.custom_tags_municipio))
+        temp_options = [opt for opt in all_municipio_options if opt not in ["(Nulo)", "(Vazio)"]]
+        temp_options.sort()
+        if "(Nulo)" in all_municipio_options: temp_options.append("(Nulo)")
+        if "(Vazio)" in all_municipio_options: temp_options.append("(Vazio)")
+
+        default_municipio_selection = list(set(top_municipios + [t for t in st.session_state.custom_tags_municipio if t in temp_options]))
+        if include_null_municipio and "(Nulo)" in temp_options: default_municipio_selection.append("(Nulo)")
+        if include_empty_municipio and "(Vazio)" in temp_options: default_municipio_selection.append("(Vazio)")
+
+        selected_municipios = st.multiselect(
+            "Municípios selecionados:",
+            options=temp_options,
+            default=default_municipio_selection,
+            key="ia_municipio_select"
+        )
+        ia_params['municipio'] = selected_municipios if selected_municipios else []
+
+        new_municipio_tag = st.text_input("Adicionar novo Município:", key="new_municipio_tag_input")
+        if new_municipio_tag and st.button("Adicionar Tag (Município)", key="add_municipio_tag_button"):
+            if new_municipio_tag.strip() not in st.session_state.custom_tags_municipio:
+                st.session_state.custom_tags_municipio.append(new_municipio_tag.strip())
+                st.rerun()
     else:
-        ia_params['municipio'] = [] # Explicitamente define como vazio se desmarcado
+        ia_params['municipio'] = []
 
+st.divider() # ou st.markdown("---")
+
+# --- Bairro ---
+# Initialize custom_tags_bairro
+if 'custom_tags_bairro' not in st.session_state:
+    st.session_state.custom_tags_bairro = []
+
+col1_bairro, col2_bairro, col3_bairro = st.columns([1, 1, 2])
+with col1_bairro:
     use_bairro = st.checkbox("Incluir Bairro", value=False)
+with col2_bairro:
+    include_null_bairro = st.checkbox("Nulo?", key="ia_bairro_null") if use_bairro else False
+    include_empty_bairro = st.checkbox("Vazio?", key="ia_bairro_empty") if use_bairro else False
+with col3_bairro:
     if use_bairro:
-        col_bairro_null, col_bairro_empty = st.columns(2)
-        with col_bairro_null:
-            include_null_bairro = st.checkbox("Incluir Bairro Nulo?", key="ia_bairro_null")
-        with col_bairro_empty:
-            include_empty_bairro = st.checkbox("Incluir Bairro Vazio?", key="ia_bairro_empty")
-
         top_n_bairro = st.slider("Top N Bairros mais frequentes:", min_value=1, max_value=50, value=10, key="ia_top_bairro")
         df_temp_bairro = df_clientes.copy()
         def normalizar_bairro_ia(bairro):
@@ -591,70 +640,208 @@ with col1:
             return unidecode(str(bairro).upper().split('/')[0].strip())
         df_temp_bairro['bairro_normalizado_ia'] = df_temp_bairro['bairro'].apply(normalizar_bairro_ia)
         top_bairros = get_unique_values(df_temp_bairro, 'bairro_normalizado_ia', top_n_bairro, include_null=include_null_bairro, include_empty=include_empty_bairro)
-        if top_bairros:
-            ia_params['bairro'] = st.multiselect("Bairros selecionados:", options=top_bairros, default=top_bairros, key="ia_bairro_select")
-        else:
-            st.info("Nenhum bairro relevante encontrado nos dados dos clientes.")
-            ia_params['bairro'] = []
+        
+        all_bairro_options = list(set(top_bairros + st.session_state.custom_tags_bairro))
+        temp_options = [opt for opt in all_bairro_options if opt not in ["(Nulo)", "(Vazio)"]]
+        temp_options.sort()
+        if "(Nulo)" in all_bairro_options: temp_options.append("(Nulo)")
+        if "(Vazio)" in all_bairro_options: temp_options.append("(Vazio)")
+
+        default_bairro_selection = list(set(top_bairros + [t for t in st.session_state.custom_tags_bairro if t in temp_options]))
+        if include_null_bairro and "(Nulo)" in temp_options: default_bairro_selection.append("(Nulo)")
+        if include_empty_bairro and "(Vazio)" in temp_options: default_bairro_selection.append("(Vazio)")
+
+        selected_bairros = st.multiselect(
+            "Bairros selecionados:",
+            options=temp_options,
+            default=default_bairro_selection,
+            key="ia_bairro_select"
+        )
+        ia_params['bairro'] = selected_bairros if selected_bairros else []
+
+        new_bairro_tag = st.text_input("Adicionar novo Bairro:", key="new_bairro_tag_input")
+        if new_bairro_tag and st.button("Adicionar Tag (Bairro)", key="add_bairro_tag_button"):
+            if new_bairro_tag.strip() not in st.session_state.custom_tags_bairro:
+                st.session_state.custom_tags_bairro.append(new_bairro_tag.strip())
+                st.rerun()
     else:
-        ia_params['bairro'] = [] # Explicitamente define como vazio se desmarcado
+        ia_params['bairro'] = []
 
+st.divider() # ou st.markdown("---")
+
+# --- CNAE Principal ---
+# Initialize custom_tags_cnae_principal
+if 'custom_tags_cnae_principal' not in st.session_state:
+    st.session_state.custom_tags_cnae_principal = [] # Stores tuples (code, description)
+
+col1_cnae_p, col2_cnae_p, col3_cnae_p = st.columns([1, 1, 2])
+with col1_cnae_p:
     use_cnae_principal = st.checkbox("Incluir CNAE Principal", value=True)
+with col2_cnae_p:
+    include_null_cnae_p = st.checkbox("Nulo?", key="ia_cnae_p_null") if use_cnae_principal else False
+    include_empty_cnae_p = st.checkbox("Vazio?", key="ia_cnae_p_empty") if use_cnae_principal else False
+with col3_cnae_p:
     if use_cnae_principal:
-        col_cnae_p_null, col_cnae_p_empty = st.columns(2)
-        with col_cnae_p_null:
-            include_null_cnae_p = st.checkbox("Incluir CNAE Principal Nulo?", key="ia_cnae_p_null")
-        with col_cnae_p_empty:
-            include_empty_cnae_p = st.checkbox("Incluir CNAE Principal Vazio?", key="ia_cnae_p_empty")
-
         top_n_cnae_principal = st.slider("Top N CNAEs Principais mais frequentes:", min_value=1, max_value=50, value=10, key="ia_top_cnae_principal")
         top_cnaes_principal_pairs = get_top_n_cnaes(df_clientes, 'principal', top_n_cnae_principal, include_null=include_null_cnae_p, include_empty=include_empty_cnae_p)
-        if top_cnaes_principal_pairs:
-            options_display = [f"{code} - {desc}" for code, desc in top_cnaes_principal_pairs]
-            selected_options = st.multiselect("CNAEs Principais selecionados:", options=options_display, default=options_display, key="ia_cnae_principal_select")
-            ia_params['cod_cnae_principal'] = []
-            for opt in selected_options:
-                if opt == "(Nulo) - (Nulo)":
-                    ia_params['cod_cnae_principal'].append(("(Nulo)", "(Nulo)"))
-                elif opt == "(Vazio) - (Vazio)":
-                    ia_params['cod_cnae_principal'].append(("(Vazio)", "(Vazio)"))
+        
+        all_cnae_p_options_tuple = list(set(top_cnaes_principal_pairs + st.session_state.custom_tags_cnae_principal))
+        all_cnae_p_options_display = []
+        default_cnae_p_selection_display = []
+
+        # Separate special tags for sorting
+        special_tags_p = []
+        for code, desc in all_cnae_p_options_tuple:
+            if code in ["(Nulo)", "(Vazio)"]:
+                special_tags_p.append((code, desc))
+            else:
+                all_cnae_p_options_display.append(f"{code} - {desc}")
+        
+        all_cnae_p_options_display.sort()
+        
+        for code, desc in special_tags_p:
+            all_cnae_p_options_display.append(f"{code} - {desc}")
+
+        for code, desc in top_cnaes_principal_pairs:
+            if f"{code} - {desc}" in all_cnae_p_options_display:
+                default_cnae_p_selection_display.append(f"{code} - {desc}")
+        for code, desc in st.session_state.custom_tags_cnae_principal:
+            if f"{code} - {desc}" in all_cnae_p_options_display:
+                default_cnae_p_selection_display.append(f"{code} - {desc}")
+        
+        if include_null_cnae_p and "(Nulo) - (Nulo)" in all_cnae_p_options_display:
+            default_cnae_p_selection_display.append("(Nulo) - (Nulo)")
+        if include_empty_cnae_p and "(Vazio) - (Vazio)" in all_cnae_p_options_display:
+            default_cnae_p_selection_display.append("(Vazio) - (Vazio)")
+
+        selected_options_cnae_p = st.multiselect(
+            "CNAEs Principais selecionados:",
+            options=all_cnae_p_options_display,
+            default=list(set(default_cnae_p_selection_display)), # Use set to remove duplicates
+            key="ia_cnae_principal_select"
+        )
+
+        ia_params['cod_cnae_principal'] = []
+        for opt in selected_options_cnae_p:
+            if opt == "(Nulo) - (Nulo)":
+                ia_params['cod_cnae_principal'].append(("(Nulo)", "(Nulo)"))
+            elif opt == "(Vazio) - (Vazio)":
+                ia_params['cod_cnae_principal'].append(("(Vazio)", "(Vazio)"))
+            else:
+                code_desc_pair = opt.split(' - ', 1)
+                if len(code_desc_pair) == 2:
+                    ia_params['cod_cnae_principal'].append((code_desc_pair[0], code_desc_pair[1]))
                 else:
-                    ia_params['cod_cnae_principal'].append((opt.split(' - ')[0], opt.split(' - ')[1]))
-        else:
-            st.info("Nenhum CNAE Principal relevante encontrado.")
-            ia_params['cod_cnae_principal'] = []
+                    ia_params['cod_cnae_principal'].append((opt, opt)) # Fallback if format is unexpected
+        
+        new_cnae_p_input = st.text_input("Adicionar novo CNAE Principal (código ou descrição):", key="new_cnae_p_input")
+        if new_cnae_p_input and st.button("Adicionar Tag (CNAE Principal)", key="add_cnae_p_tag_button"):
+            # Basic attempt to parse. For full lookup, might need DB query
+            new_cnae_p_code = new_cnae_p_input.strip()
+            new_cnae_p_desc = new_cnae_p_input.strip() # Assuming description if not code
+            
+            # Simple check if it looks like a code (e.g., 4 digits, dot, 2 digits)
+            if re.match(r'^\d{4}-\d{1}$', new_cnae_p_code) or re.match(r'^\d{4}-\d{2}$', new_cnae_p_code):
+                pass # Already looks like a code
+            elif re.match(r'^\d{4}\d{2}$', new_cnae_p_code): # If 6 digits, format it
+                 new_cnae_p_code = f"{new_cnae_p_code[:4]}-{new_cnae_p_code[4:]}"
+            
+            new_cnae_pair = (new_cnae_p_code, new_cnae_p_desc)
+            if new_cnae_pair not in st.session_state.custom_tags_cnae_principal:
+                st.session_state.custom_tags_cnae_principal.append(new_cnae_pair)
+                st.rerun()
     else:
-        ia_params['cod_cnae_principal'] = [] # Explicitamente define como vazio se desmarcado
+        ia_params['cod_cnae_principal'] = []
 
+st.divider() # ou st.markdown("---")
+
+# --- CNAE Secundário ---
+# Initialize custom_tags_cnae_secundario
+if 'custom_tags_cnae_secundario' not in st.session_state:
+    st.session_state.custom_tags_cnae_secundario = [] # Stores tuples (code, description)
+
+col1_cnae_s, col2_cnae_s, col3_cnae_s = st.columns([1, 1, 2])
+with col1_cnae_s:
     use_cnae_secundario = st.checkbox("Incluir CNAE Secundário", value=False)
+with col2_cnae_s:
+    include_null_cnae_s = st.checkbox("Nulo?", key="ia_cnae_s_null") if use_cnae_secundario else False
+    include_empty_cnae_s = st.checkbox("Vazio?", key="ia_cnae_s_empty") if use_cnae_secundario else False
+with col3_cnae_s:
     if use_cnae_secundario:
-        col_cnae_s_null, col_cnae_s_empty = st.columns(2)
-        with col_cnae_s_null:
-            include_null_cnae_s = st.checkbox("Incluir CNAE Secundário Nulo?", key="ia_cnae_s_null")
-        with col_cnae_s_empty:
-            include_empty_cnae_s = st.checkbox("Incluir CNAE Secundário Vazio?", key="ia_cnae_s_empty")
-
         top_n_cnae_secundario = st.slider("Top N CNAEs Secundários mais frequentes:", min_value=1, max_value=50, value=10, key="ia_top_cnae_secundario")
         top_cnaes_secundario_pairs = get_top_n_cnaes(df_clientes, 'secundario', top_n_cnae_secundario, include_null=include_null_cnae_s, include_empty=include_empty_cnae_s)
-        if top_cnaes_secundario_pairs:
-            options_display = [f"{code} - {desc}" for code, desc in top_cnaes_secundario_pairs]
-            selected_options = st.multiselect("CNAEs Secundários selecionados:", options=options_display, default=options_display, key="ia_cnae_secundario_select")
-            ia_params['cod_cnae_secundario'] = []
-            for opt in selected_options:
-                if opt == "(Nulo) - (Nulo)":
-                    ia_params['cod_cnae_secundario'].append(("(Nulo)", "(Nulo)"))
-                elif opt == "(Vazio) - (Vazio)":
-                    ia_params['cod_cnae_secundario'].append(("(Vazio)", "(Vazio)"))
-                else:
-                    ia_params['cod_cnae_secundario'].append((opt.split(' - ')[0], opt.split(' - ')[1]))
-        else:
-            st.info("Nenhum CNAE Secundário relevante encontrado.")
-            ia_params['cod_cnae_secundario'] = []
-    else:
-        ia_params['cod_cnae_secundario'] = [] # Explicitamente define como vazio se desmarcado
+        
+        all_cnae_s_options_tuple = list(set(top_cnaes_secundario_pairs + st.session_state.custom_tags_cnae_secundario))
+        all_cnae_s_options_display = []
+        default_cnae_s_selection_display = []
 
-    st.subheader("Data de Início de Atividade")
+        special_tags_s = []
+        for code, desc in all_cnae_s_options_tuple:
+            if code in ["(Nulo)", "(Vazio)"]:
+                special_tags_s.append((code, desc))
+            else:
+                all_cnae_s_options_display.append(f"{code} - {desc}")
+        
+        all_cnae_s_options_display.sort()
+        
+        for code, desc in special_tags_s:
+            all_cnae_s_options_display.append(f"{code} - {desc}")
+
+        for code, desc in top_cnaes_secundario_pairs:
+            if f"{code} - {desc}" in all_cnae_s_options_display:
+                default_cnae_s_selection_display.append(f"{code} - {desc}")
+        for code, desc in st.session_state.custom_tags_cnae_secundario:
+            if f"{code} - {desc}" in all_cnae_s_options_display:
+                default_cnae_s_selection_display.append(f"{code} - {desc}")
+
+        selected_options_cnae_s = st.multiselect(
+            "CNAEs Secundários selecionados:",
+            options=all_cnae_s_options_display,
+            default=list(set(default_cnae_s_selection_display)),
+            key="ia_cnae_secundario_select"
+        )
+
+        ia_params['cod_cnae_secundario'] = []
+        for opt in selected_options_cnae_s:
+            if opt == "(Nulo) - (Nulo)":
+                ia_params['cod_cnae_secundario'].append(("(Nulo)", "(Nulo)"))
+            elif opt == "(Vazio) - (Vazio)":
+                ia_params['cod_cnae_secundario'].append(("(Vazio)", "(Vazio)"))
+            else:
+                code_desc_pair = opt.split(' - ', 1)
+                if len(code_desc_pair) == 2:
+                    ia_params['cod_cnae_secundario'].append((code_desc_pair[0], code_desc_pair[1]))
+                else:
+                    ia_params['cod_cnae_secundario'].append((opt, opt))
+        
+        new_cnae_s_input = st.text_input("Adicionar novo CNAE Secundário (código ou descrição):", key="new_cnae_s_input")
+        if new_cnae_s_input and st.button("Adicionar Tag (CNAE Secundário)", key="add_cnae_s_tag_button"):
+            new_cnae_s_code = new_cnae_s_input.strip()
+            new_cnae_s_desc = new_cnae_s_input.strip()
+            if re.match(r'^\d{4}-\d{1}$', new_cnae_s_code) or re.match(r'^\d{4}-\d{2}$', new_cnae_s_code):
+                pass
+            elif re.match(r'^\d{4}\d{2}$', new_cnae_s_code):
+                 new_cnae_s_code = f"{new_cnae_s_code[:4]}-{new_cnae_s_code[4:]}"
+            
+            new_cnae_pair = (new_cnae_s_code, new_cnae_s_desc)
+            if new_cnae_pair not in st.session_state.custom_tags_cnae_secundario:
+                st.session_state.custom_tags_cnae_secundario.append(new_cnae_pair)
+                st.rerun()
+    else:
+        ia_params['cod_cnae_secundario'] = []
+
+st.divider() # ou st.markdown("---")
+
+# --- Data de Início de Atividade ---
+col1_data, col2_data, col3_data = st.columns([1, 1, 2])
+with col1_data:
     use_data_inicio = st.checkbox("Incluir Período de Início de Atividade", value=True)
+with col2_data:
+    # No "data de início", não há opção de Nulo/Vazio para checkbox separado, 
+    # pois o range já naturalmente trata isso se não houver dados.
+    # Se precisar de um "Incluir Nulo/Vazio" específico para a data, precisaria de uma lógica de query separada.
+    st.write("") # Placeholder for alignment
+with col3_data:
     if use_data_inicio:
         min_date_client = df_clientes['data_inicio_atividade'].min() if 'data_inicio_atividade' in df_clientes.columns and not df_clientes['data_inicio_atividade'].empty else datetime(1900, 1, 1).date()
         max_date_client = df_clientes['data_inicio_atividade'].max() if 'data_inicio_atividade' in df_clientes.columns and not df_clientes['data_inicio_atividade'].empty else datetime.now().date()
@@ -667,35 +854,38 @@ with col1:
         min_calendar_date = datetime(1900, 1, 1).date()
         max_calendar_date = datetime.now().date()
 
-        col_start_date, col_end_date = st.columns(2)
-        with col_start_date:
-            start_date = st.date_input(
-                "Data de Início (De):",
-                value=min_date_client,
-                min_value=min_calendar_date,
-                max_value=max_calendar_date,
-                key="ia_start_date_input"
-            )
-        with col_end_date:
-            end_date = st.date_input(
-                "Data de Início (Até):",
-                value=max_calendar_date,
-                min_value=min_calendar_date,
-                max_value=max_calendar_date,
-                key="ia_end_date_input"
-            )
+        start_date = st.date_input(
+            "Data de Início (De):",
+            value=min_date_client,
+            min_value=min_calendar_date,
+            max_value=max_calendar_date,
+            key="ia_start_date_input"
+        )
+        end_date = st.date_input(
+            "Data de Início (Até):",
+            value=max_calendar_date,
+            min_value=min_calendar_date,
+            max_value=max_calendar_date,
+            key="ia_end_date_input"
+        )
 
         if start_date > end_date:
             st.error("A 'Data de Início (De)' não pode ser posterior à 'Data de Início (Até)'. Por favor, ajuste o período.")
-            ia_params['data_inicio_atividade'] = None # Define como None se houver erro ou desativado
+            ia_params['data_inicio_atividade'] = None
         else:
             ia_params['data_inicio_atividade'] = (start_date, end_date)
     else:
-        ia_params['data_inicio_atividade'] = None # Explicitamente define como None se desmarcado
+        ia_params['data_inicio_atividade'] = None
 
+st.divider() # ou st.markdown("---")
 
-    st.subheader("Capital Social")
+# --- Capital Social ---
+col1_capital, col2_capital, col3_capital = st.columns([1, 1, 2])
+with col1_capital:
     use_capital_social = st.checkbox("Incluir Faixa de Capital Social", value=True)
+with col2_capital:
+    st.write("") # Placeholder for alignment
+with col3_capital:
     if use_capital_social:
         min_capital_client = df_clientes['capital_social'].min() if 'capital_social' in df_clientes.columns and not df_clientes['capital_social'].empty else 0.0
         max_capital_client = df_clientes['capital_social'].max() if 'capital_social' in df_clientes.columns and not df_clientes['capital_social'].empty else 10000000.0
@@ -704,241 +894,387 @@ with col1:
             min_capital_client = max(0.0, min_capital_client * 0.9)
             max_capital_client = max_capital_client * 1.1
 
-        col_min_capital, col_max_capital = st.columns(2)
-        with col_min_capital:
-            min_val = st.number_input(
-                "Capital Social (Mínimo):",
-                min_value=0.0,
-                value=float(min_capital_client),
-                step=1000.0,
-                format="%.2f",
-                key="ia_min_capital_input"
-            )
-        with col_max_capital:
-            max_val = st.number_input(
-                "Capital Social (Máximo):",
-                min_value=0.0,
-                value=float(max_capital_client),
-                step=1000.0,
-                format="%.2f",
-                key="ia_max_capital_input"
-            )
+        min_val = st.number_input(
+            "Capital Social (Mínimo):",
+            min_value=0.0,
+            value=float(min_capital_client),
+            step=1000.0,
+            format="%.2f",
+            key="ia_min_capital_input"
+        )
+        max_val = st.number_input(
+            "Capital Social (Máximo):",
+            min_value=0.0,
+            value=float(max_capital_client),
+            step=1000.0,
+            format="%.2f",
+            key="ia_max_capital_input"
+        )
 
         if min_val > max_val:
             st.error("O Capital Social Mínimo não pode ser maior que o Capital Social Máximo.")
-            ia_params['capital_social'] = None # Define como None se houver erro ou desativado
+            ia_params['capital_social'] = None
         else:
             ia_params['capital_social'] = (min_val, max_val)
         st.info(f"Faixa Selecionada: R$ {min_val:,.2f} a R$ {max_val:,.2f}")
     else:
-        ia_params['capital_social'] = None # Explicitamente define como None se desmarcado
+        ia_params['capital_social'] = None
 
+st.divider() # ou st.markdown("---")
 
+# --- Porte da Empresa ---
+# Initialize custom_tags_porte_empresa
+if 'custom_tags_porte_empresa' not in st.session_state:
+    st.session_state.custom_tags_porte_empresa = []
+
+col1_porte, col2_porte, col3_porte = st.columns([1, 1, 2])
+with col1_porte:
     use_porte_empresa = st.checkbox("Incluir Porte da Empresa", value=True)
+with col2_porte:
+    include_null_porte = st.checkbox("Nulo?", key="ia_porte_null") if use_porte_empresa else False
+    include_empty_porte = st.checkbox("Vazio?", key="ia_porte_empty") if use_porte_empresa else False
+with col3_porte:
     if use_porte_empresa:
-        col_porte_null, col_porte_empty = st.columns(2)
-        with col_porte_null:
-            include_null_porte = st.checkbox("Incluir Porte da Empresa Nulo?", key="ia_porte_null")
-        with col_porte_empty:
-            include_empty_porte = st.checkbox("Incluir Porte da Empresa Vazio?", key="ia_porte_empty")
-        
-        options_porte = ["MICRO EMPRESA", "EMPRESA DE PEQUENO PORTE", "DEMAIS"]
-        if include_null_porte:
-            options_porte.append("(Nulo)")
-        if include_empty_porte:
-            options_porte.append("(Vazio)")
-
-        # Pega os portes únicos da DF e adiciona (Nulo) e (Vazio) se aplicável
+        # Original options
+        base_options_porte = ["MICRO EMPRESA", "EMPRESA DE PEQUENO PORTE", "DEMAIS"]
+        # Filter options based on existing client data to use as default, or add if not present
         unique_portes_from_df = df_clientes['porte_empresa'].dropna().unique().tolist()
-        default_selected_portes = [p for p in unique_portes_from_df if p in options_porte]
-        if include_null_porte and "(Nulo)" in options_porte:
-            default_selected_portes.append("(Nulo)")
-        if include_empty_porte and "(Vazio)" in options_porte:
-            default_selected_portes.append("(Vazio)")
+        
+        all_porte_options = list(set(base_options_porte + unique_portes_from_df + st.session_state.custom_tags_porte_empresa))
+        temp_options = [opt for opt in all_porte_options if opt not in ["(Nulo)", "(Vazio)"]]
+        temp_options.sort()
+        if "(Nulo)" in all_porte_options: temp_options.append("(Nulo)")
+        if "(Vazio)" in all_porte_options: temp_options.append("(Vazio)")
 
+        default_selected_portes = list(set([p for p in base_options_porte if p in temp_options] + unique_portes_from_df + [t for t in st.session_state.custom_tags_porte_empresa if t in temp_options]))
+        if include_null_porte and "(Nulo)" in temp_options: default_selected_portes.append("(Nulo)")
+        if include_empty_porte and "(Vazio)" in temp_options: default_selected_portes.append("(Vazio)")
+        
         selected_portes = st.multiselect(
             "Selecione o(s) Porte(s) da Empresa:",
-            options=options_porte,
-            default=default_selected_portes,
+            options=temp_options,
+            default=list(set(default_selected_portes)),
             key="ia_porte_empresa_select"
         )
-        if selected_portes:
-            ia_params['porte_empresa'] = selected_portes
-        else:
-            ia_params['porte_empresa'] = []
+        ia_params['porte_empresa'] = selected_portes if selected_portes else []
+
+        new_porte_tag = st.text_input("Adicionar novo Porte da Empresa:", key="new_porte_tag_input")
+        if new_porte_tag and st.button("Adicionar Tag (Porte)", key="add_porte_tag_button"):
+            if new_porte_tag.strip() not in st.session_state.custom_tags_porte_empresa:
+                st.session_state.custom_tags_porte_empresa.append(new_porte_tag.strip())
+                st.rerun()
     else:
-        ia_params['porte_empresa'] = [] # Explicitamente define como vazio se desmarcado
+        ia_params['porte_empresa'] = []
 
+st.divider() # ou st.markdown("---")
+
+# --- Natureza Jurídica ---
+# Initialize custom_tags_natureza_juridica
+if 'custom_tags_natureza_juridica' not in st.session_state:
+    st.session_state.custom_tags_natureza_juridica = []
+
+col1_nj, col2_nj, col3_nj = st.columns([1, 1, 2])
+with col1_nj:
     use_natureza_juridica = st.checkbox("Incluir Natureza Jurídica", value=False)
+with col2_nj:
+    include_null_nj = st.checkbox("Nulo?", key="ia_nj_null") if use_natureza_juridica else False
+    include_empty_nj = st.checkbox("Vazio?", key="ia_nj_empty") if use_natureza_juridica else False
+with col3_nj:
     if use_natureza_juridica:
-        col_nj_null, col_nj_empty = st.columns(2)
-        with col_nj_null:
-            include_null_nj = st.checkbox("Incluir Natureza Jurídica Nula?", key="ia_nj_null")
-        with col_nj_empty:
-            include_empty_nj = st.checkbox("Incluir Natureza Jurídica Vazia?", key="ia_nj_empty")
-
         top_n_nj = st.slider("Top N Naturezas Jurídicas mais frequentes:", min_value=1, max_value=50, value=10, key="ia_top_nj")
         top_njs = get_unique_values(df_clientes, 'natureza_juridica', top_n_nj, include_null=include_null_nj, include_empty=include_empty_nj)
-        if top_njs:
-            ia_params['natureza_juridica'] = st.multiselect("Naturezas Jurídicas selecionadas:", options=top_njs, default=top_njs, key="ia_nj_select")
-        else:
-            st.info("Nenhuma Natureza Jurídica relevante encontrada.")
-            ia_params['natureza_juridica'] = []
-    else:
-        ia_params['natureza_juridica'] = [] # Explicitamente define como vazio se desmarcado
-
-    use_opcao_simples = st.checkbox("Incluir Opção Simples Nacional", value=False)
-    if use_opcao_simples:
-        col_simples_null, col_simples_empty = st.columns(2)
-        with col_simples_null:
-            include_null_simples = st.checkbox("Incluir Opção Simples Nacional Nula?", key="ia_simples_null")
-        with col_simples_empty:
-            include_empty_simples = st.checkbox("Incluir Opção Simples Nacional Vazia?", key="ia_simples_empty")
         
-        simples_options = ['S', 'N']
-        if include_null_simples:
-            simples_options.append("(Nulo)")
-        if include_empty_simples:
-            simples_options.append("(Vazio)")
+        all_nj_options = list(set(top_njs + st.session_state.custom_tags_natureza_juridica))
+        temp_options = [opt for opt in all_nj_options if opt not in ["(Nulo)", "(Vazio)"]]
+        temp_options.sort()
+        if "(Nulo)" in all_nj_options: temp_options.append("(Nulo)")
+        if "(Vazio)" in all_nj_options: temp_options.append("(Vazio)")
 
-        # Pega opções únicas da DF e adiciona (Nulo) e (Vazio) se aplicável
-        unique_simples_from_df = df_clientes['opcao_simples'].dropna().unique().tolist()
-        default_selected_simples = [s for s in unique_simples_from_df if s in simples_options]
-        if include_null_simples and "(Nulo)" in simples_options:
-            default_selected_simples.append("(Nulo)")
-        if include_empty_simples and "(Vazio)" in simples_options:
-            default_selected_simples.append("(Vazio)")
+        default_nj_selection = list(set(top_njs + [t for t in st.session_state.custom_tags_natureza_juridica if t in temp_options]))
+        if include_null_nj and "(Nulo)" in temp_options: default_nj_selection.append("(Nulo)")
+        if include_empty_nj and "(Vazio)" in temp_options: default_nj_selection.append("(Vazio)")
 
-        selected_opcao_simples = st.multiselect("Optante pelo Simples Nacional?", options=simples_options, default=default_selected_simples, key="ia_simples_select")
-        if selected_opcao_simples:
-            ia_params['opcao_simples'] = selected_opcao_simples
-        else:
-            ia_params['opcao_simples'] = []
-    else:
-        ia_params['opcao_simples'] = [] # Explicitamente define como vazio se desmarcado
-
-
-    use_opcao_mei = st.checkbox("Incluir Opção MEI", value=False)
-    if use_opcao_mei:
-        col_mei_null, col_mei_empty = st.columns(2)
-        with col_mei_null:
-            include_null_mei = st.checkbox("Incluir Opção MEI Nula?", key="ia_mei_null")
-        with col_mei_empty:
-            include_empty_mei = st.checkbox("Incluir Opção MEI Vazia?", key="ia_mei_empty")
-        
-        mei_options = ['S', 'N']
-        if include_null_mei:
-            mei_options.append("(Nulo)")
-        if include_empty_mei:
-            mei_options.append("(Vazio)")
-
-        # Pega opções únicas da DF e adiciona (Nulo) e (Vazio) se aplicável
-        unique_mei_from_df = df_clientes['opcao_mei'].dropna().unique().tolist()
-        default_selected_mei = [m for m in unique_mei_from_df if m in mei_options]
-        if include_null_mei and "(Nulo)" in mei_options:
-            default_selected_mei.append("(Nulo)")
-        if include_empty_mei and "(Vazio)" in mei_options:
-            default_selected_mei.append("(Vazio)")
-
-        selected_opcao_mei = st.multiselect("Optante pelo MEI?", options=mei_options, default=default_selected_mei, key="ia_mei_select")
-        if selected_opcao_mei:
-            ia_params['opcao_mei'] = selected_opcao_mei
-        else:
-            ia_params['opcao_mei'] = []
-    else:
-        ia_params['opcao_mei'] = [] # Explicitamente define como vazio se desmarcado
-
-
-with col2:
-    st.subheader("Critérios de Contato e Sócios")
-
-    use_ddd1 = st.checkbox("Incluir DDD de Contato", value=False)
-    if use_ddd1:
-        col_ddd_null, col_ddd_empty = st.columns(2)
-        with col_ddd_null:
-            include_null_ddd1 = st.checkbox("Incluir DDD Nulo?", key="ia_ddd1_null")
-        with col_ddd_empty:
-            include_empty_ddd1 = st.checkbox("Incluir DDD Vazio?", key="ia_ddd1_empty")
-
-        top_n_ddd = st.slider("Top N DDDs mais frequentes:", min_value=1, max_value=50, value=10, key="ia_top_ddd") # Adicionei slider para top_n
-        unique_ddds = get_unique_values(df_clientes, 'ddd1', top_n_ddd, include_null=include_null_ddd1, include_empty=include_empty_ddd1)
-        selected_ddds = st.multiselect("DDDs de interesse (digite ou selecione):", options=unique_ddds, default=unique_ddds, key="ia_ddd1_select")
-        if selected_ddds:
-            ia_params['ddd1'] = selected_ddds
-        else:
-            st.info("Nenhum DDD relevante encontrado.")
-            ia_params['ddd1'] = []
-    else:
-        ia_params['ddd1'] = [] # Explicitamente define como vazio se desmarcado
-        
-    use_nome_socio_razao = st.checkbox("Incluir Nome Sócio / Razão Social (busca por similaridade)", value=False)
-    if use_nome_socio_razao:
-        col_socio_null, col_socio_empty = st.columns(2)
-        with col_socio_null:
-            include_null_socio = st.checkbox("Incluir Nome Sócio/Razão Social Nulo?", key="ia_socio_null")
-        with col_socio_empty:
-            include_empty_socio = st.checkbox("Incluir Nome Sócio/Razão Social Vazio?", key="ia_socio_empty")
-        
-        unique_socios = df_clientes['nome_socio'].dropna().astype(str).unique().tolist() if 'nome_socio' in df_clientes.columns else []
-        default_socios_input = ", ".join(unique_socios[:3]) if unique_socios else ""
-        
-        nomes_input = st.text_area(
-            "Nomes de sócios/razão social para buscar (separados por vírgula):",
-            value=default_socios_input,
-            key="ia_nome_socio_razao_input",
-            help="Digite nomes ou partes de nomes de sócios ou da razão social para buscar por similaridade. Separe por vírgulas."
+        selected_njs = st.multiselect(
+            "Naturezas Jurídicas selecionadas:",
+            options=temp_options,
+            default=list(set(default_nj_selection)),
+            key="ia_nj_select"
         )
-        
-        names_for_param = [name.strip() for name in nomes_input.split(',') if name.strip()]
-        if include_null_socio:
-            names_for_param.append("(Nulo)")
-        if include_empty_socio:
-            names_for_param.append("(Vazio)")
+        ia_params['natureza_juridica'] = selected_njs if selected_njs else []
 
-        if names_for_param:
-            ia_params['nome_socio_razao_social'] = names_for_param
-        else:
-            st.info("Digite nomes para buscar ou marque para incluir nulo/vazio.")
-            ia_params['nome_socio_razao_social'] = []
+        new_nj_tag = st.text_input("Adicionar nova Natureza Jurídica:", key="new_nj_tag_input")
+        if new_nj_tag and st.button("Adicionar Tag (Natureza Jurídica)", key="add_nj_tag_button"):
+            if new_nj_tag.strip() not in st.session_state.custom_tags_natureza_juridica:
+                st.session_state.custom_tags_natureza_juridica.append(new_nj_tag.strip())
+                st.rerun()
     else:
-        ia_params['nome_socio_razao_social'] = [] # Explicitamente define como vazio se desmarcado
+        ia_params['natureza_juridica'] = []
 
+st.divider() # ou st.markdown("---")
 
+# --- Opção Simples Nacional ---
+# Initialize custom_tags_opcao_simples
+if 'custom_tags_opcao_simples' not in st.session_state:
+    st.session_state.custom_tags_opcao_simples = []
+
+col1_simples, col2_simples, col3_simples = st.columns([1, 1, 2])
+with col1_simples:
+    use_opcao_simples = st.checkbox("Incluir Opção Simples Nacional", value=False)
+with col2_simples:
+    include_null_simples = st.checkbox("Nulo?", key="ia_simples_null") if use_opcao_simples else False
+    include_empty_simples = st.checkbox("Vazio?", key="ia_simples_empty") if use_opcao_simples else False
+with col3_simples:
+    if use_opcao_simples:
+        base_simples_options = ['S', 'N']
+        unique_simples_from_df = df_clientes['opcao_simples'].dropna().unique().tolist()
+
+        all_simples_options = list(set(base_simples_options + unique_simples_from_df + st.session_state.custom_tags_opcao_simples))
+        temp_options = [opt for opt in all_simples_options if opt not in ["(Nulo)", "(Vazio)"]]
+        temp_options.sort()
+        if "(Nulo)" in all_simples_options: temp_options.append("(Nulo)")
+        if "(Vazio)" in all_simples_options: temp_options.append("(Vazio)")
+
+        default_selected_simples = list(set([s for s in base_simples_options if s in temp_options] + unique_simples_from_df + [t for t in st.session_state.custom_tags_opcao_simples if t in temp_options]))
+        if include_null_simples and "(Nulo)" in temp_options: default_selected_simples.append("(Nulo)")
+        if include_empty_simples and "(Vazio)" in temp_options: default_selected_simples.append("(Vazio)")
+
+        selected_opcao_simples = st.multiselect(
+            "Optante pelo Simples Nacional?",
+            options=temp_options,
+            default=list(set(default_selected_simples)),
+            key="ia_simples_select"
+        )
+        ia_params['opcao_simples'] = selected_opcao_simples if selected_opcao_simples else []
+
+        new_simples_tag = st.text_input("Adicionar nova Opção Simples Nacional:", key="new_simples_tag_input")
+        if new_simples_tag and st.button("Adicionar Tag (Simples)", key="add_simples_tag_button"):
+            if new_simples_tag.strip().upper() not in st.session_state.custom_tags_opcao_simples:
+                st.session_state.custom_tags_opcao_simples.append(new_simples_tag.strip().upper())
+                st.rerun()
+    else:
+        ia_params['opcao_simples'] = []
+
+st.divider() # ou st.markdown("---")
+
+# --- Opção MEI ---
+# Initialize custom_tags_opcao_mei
+if 'custom_tags_opcao_mei' not in st.session_state:
+    st.session_state.custom_tags_opcao_mei = []
+
+col1_mei, col2_mei, col3_mei = st.columns([1, 1, 2])
+with col1_mei:
+    use_opcao_mei = st.checkbox("Incluir Opção MEI", value=False)
+with col2_mei:
+    include_null_mei = st.checkbox("Nulo?", key="ia_mei_null") if use_opcao_mei else False
+    include_empty_mei = st.checkbox("Vazio?", key="ia_mei_empty") if use_opcao_mei else False
+with col3_mei:
+    if use_opcao_mei:
+        base_mei_options = ['S', 'N']
+        unique_mei_from_df = df_clientes['opcao_mei'].dropna().unique().tolist()
+
+        all_mei_options = list(set(base_mei_options + unique_mei_from_df + st.session_state.custom_tags_opcao_mei))
+        temp_options = [opt for opt in all_mei_options if opt not in ["(Nulo)", "(Vazio)"]]
+        temp_options.sort()
+        if "(Nulo)" in all_mei_options: temp_options.append("(Nulo)")
+        if "(Vazio)" in all_mei_options: temp_options.append("(Vazio)")
+
+        default_selected_mei = list(set([m for m in base_mei_options if m in temp_options] + unique_mei_from_df + [t for t in st.session_state.custom_tags_opcao_mei if t in temp_options]))
+        if include_null_mei and "(Nulo)" in temp_options: default_selected_mei.append("(Nulo)")
+        if include_empty_mei and "(Vazio)" in temp_options: default_selected_mei.append("(Vazio)")
+
+        selected_opcao_mei = st.multiselect(
+            "Optante pelo MEI?",
+            options=temp_options,
+            default=list(set(default_selected_mei)),
+            key="ia_mei_select"
+        )
+        ia_params['opcao_mei'] = selected_opcao_mei if selected_opcao_mei else []
+
+        new_mei_tag = st.text_input("Adicionar nova Opção MEI:", key="new_mei_tag_input")
+        if new_mei_tag and st.button("Adicionar Tag (MEI)", key="add_mei_tag_button"):
+            if new_mei_tag.strip().upper() not in st.session_state.custom_tags_opcao_mei:
+                st.session_state.custom_tags_opcao_mei.append(new_mei_tag.strip().upper())
+                st.rerun()
+    else:
+        ia_params['opcao_mei'] = []
+
+st.divider() # ou st.markdown("---")
+
+# --- Critérios de Contato e Sócios ---
+st.subheader("Critérios de Contato e Sócios")
+
+# --- DDD de Contato ---
+# Initialize custom_tags_ddd1
+if 'custom_tags_ddd1' not in st.session_state:
+    st.session_state.custom_tags_ddd1 = []
+
+col1_ddd, col2_ddd, col3_ddd = st.columns([1, 1, 2])
+with col1_ddd:
+    use_ddd1 = st.checkbox("Incluir DDD de Contato", value=False)
+with col2_ddd:
+    include_null_ddd1 = st.checkbox("Nulo?", key="ia_ddd1_null") if use_ddd1 else False
+    include_empty_ddd1 = st.checkbox("Vazio?", key="ia_ddd1_empty") if use_ddd1 else False
+with col3_ddd:
+    if use_ddd1:
+        top_n_ddd = st.slider("Top N DDDs mais frequentes:", min_value=1, max_value=50, value=10, key="ia_top_ddd")
+        unique_ddds = get_unique_values(df_clientes, 'ddd1', top_n_ddd, include_null=include_null_ddd1, include_empty=include_empty_ddd1)
+        
+        all_ddd_options = list(set(unique_ddds + st.session_state.custom_tags_ddd1))
+        temp_options = [opt for opt in all_ddd_options if opt not in ["(Nulo)", "(Vazio)"]]
+        temp_options.sort()
+        if "(Nulo)" in all_ddd_options: temp_options.append("(Nulo)")
+        if "(Vazio)" in all_ddd_options: temp_options.append("(Vazio)")
+
+        default_selected_ddds = list(set(unique_ddds + [t for t in st.session_state.custom_tags_ddd1 if t in temp_options]))
+        if include_null_ddd1 and "(Nulo)" in temp_options: default_selected_ddds.append("(Nulo)")
+        if include_empty_ddd1 and "(Vazio)" in temp_options: default_selected_ddds.append("(Vazio)")
+
+        selected_ddds = st.multiselect(
+            "DDDs de interesse:",
+            options=temp_options,
+            default=list(set(default_selected_ddds)),
+            key="ia_ddd1_select"
+        )
+        ia_params['ddd1'] = selected_ddds if selected_ddds else []
+
+        new_ddd_tag = st.text_input("Adicionar novo DDD:", key="new_ddd_tag_input")
+        if new_ddd_tag and st.button("Adicionar Tag (DDD)", key="add_ddd_tag_button"):
+            if new_ddd_tag.strip() not in st.session_state.custom_tags_ddd1:
+                st.session_state.custom_tags_ddd1.append(new_ddd_tag.strip())
+                st.rerun()
+    else:
+        ia_params['ddd1'] = []
+
+st.divider() # ou st.markdown("---")
+
+# --- Nome Sócio / Razão Social ---
+# Initialize custom_tags_nome_socio
+if 'custom_tags_nome_socio' not in st.session_state:
+    st.session_state.custom_tags_nome_socio = []
+
+col1_socio, col2_socio, col3_socio = st.columns([1, 1, 2])
+with col1_socio:
+    use_nome_socio_razao = st.checkbox("Incluir Nome Sócio / Razão Social (similaridade)", value=False)
+with col2_socio:
+    include_null_socio = st.checkbox("Nulo?", key="ia_socio_null") if use_nome_socio_razao else False
+    include_empty_socio = st.checkbox("Vazio?", key="ia_socio_empty") if use_nome_socio_razao else False
+with col3_socio:
+    if use_nome_socio_razao:
+        unique_socios = df_clientes['nome_socio'].dropna().astype(str).unique().tolist() if 'nome_socio' in df_clientes.columns else []
+        # Combine unique socios with custom ones
+        all_socio_options = list(set(unique_socios + st.session_state.custom_tags_nome_socio))
+        temp_options = [opt for opt in all_socio_options if opt not in ["(Nulo)", "(Vazio)"]]
+        temp_options.sort()
+        if "(Nulo)" in all_socio_options: temp_options.append("(Nulo)")
+        if "(Vazio)" in all_socio_options: temp_options.append("(Vazio)")
+
+        default_socio_selection = list(set(unique_socios + [t for t in st.session_state.custom_tags_nome_socio if t in temp_options]))
+        if include_null_socio and "(Nulo)" in temp_options: default_socio_selection.append("(Nulo)")
+        if include_empty_socio and "(Vazio)" in temp_options: default_socio_selection.append("(Vazio)")
+
+        selected_socio_names = st.multiselect(
+            "Nomes/Partes de nomes selecionados:",
+            options=temp_options,
+            default=list(set(default_socio_selection)),
+            key="ia_nome_socio_select"
+        )
+        ia_params['nome_socio_razao_social'] = selected_socio_names if selected_socio_names else []
+
+        new_socio_tag = st.text_input("Adicionar novo Nome Sócio / Razão Social:", key="new_socio_tag_input")
+        if new_socio_tag and st.button("Adicionar Tag (Sócio/Razão Social)", key="add_socio_tag_button"):
+            if new_socio_tag.strip() not in st.session_state.custom_tags_nome_socio:
+                st.session_state.custom_tags_nome_socio.append(new_socio_tag.strip())
+                st.rerun()
+    else:
+        ia_params['nome_socio_razao_social'] = []
+
+st.divider() # ou st.markdown("---")
+
+# --- Qualificação do Sócio ---
+# Initialize custom_tags_qualificacao_socio
+if 'custom_tags_qualificacao_socio' not in st.session_state:
+    st.session_state.custom_tags_qualificacao_socio = []
+
+col1_qs, col2_qs, col3_qs = st.columns([1, 1, 2])
+with col1_qs:
     use_qualificacao_socio = st.checkbox("Incluir Qualificação do Sócio", value=False)
+with col2_qs:
+    include_null_qs = st.checkbox("Nulo?", key="ia_qs_null") if use_qualificacao_socio else False
+    include_empty_qs = st.checkbox("Vazio?", key="ia_qs_empty") if use_qualificacao_socio else False
+with col3_qs:
     if use_qualificacao_socio:
-        col_qs_null, col_qs_empty = st.columns(2)
-        with col_qs_null:
-            include_null_qs = st.checkbox("Incluir Qualificação do Sócio Nula?", key="ia_qs_null")
-        with col_qs_empty:
-            include_empty_qs = st.checkbox("Incluir Qualificação do Sócio Vazia?", key="ia_qs_empty")
-
         top_n_qs = st.slider("Top N Qualificações de Sócio mais frequentes:", min_value=1, max_value=50, value=10, key="ia_top_qs")
         top_qss = get_unique_values(df_clientes, 'qualificacao_socio', top_n_qs, include_null=include_null_qs, include_empty=include_empty_qs)
-        if top_qss:
-            ia_params['qualificacao_socio'] = st.multiselect("Qualificações de sócio selecionadas:", options=top_qss, default=top_qss, key="ia_qs_select")
-        else:
-            st.info("Nenhuma Qualificação de Sócio relevante encontrada.")
-            ia_params['qualificacao_socio'] = []
+        
+        all_qs_options = list(set(top_qss + st.session_state.custom_tags_qualificacao_socio))
+        temp_options = [opt for opt in all_qs_options if opt not in ["(Nulo)", "(Vazio)"]]
+        temp_options.sort()
+        if "(Nulo)" in all_qs_options: temp_options.append("(Nulo)")
+        if "(Vazio)" in all_qs_options: temp_options.append("(Vazio)")
+
+        default_qs_selection = list(set(top_qss + [t for t in st.session_state.custom_tags_qualificacao_socio if t in temp_options]))
+        if include_null_qs and "(Nulo)" in temp_options: default_qs_selection.append("(Nulo)")
+        if include_empty_qs and "(Vazio)" in temp_options: default_qs_selection.append("(Vazio)")
+
+        selected_qss = st.multiselect(
+            "Qualificações de sócio selecionadas:",
+            options=temp_options,
+            default=list(set(default_qs_selection)),
+            key="ia_qs_select"
+        )
+        ia_params['qualificacao_socio'] = selected_qss if selected_qss else []
+
+        new_qs_tag = st.text_input("Adicionar nova Qualificação do Sócio:", key="new_qs_tag_input")
+        if new_qs_tag and st.button("Adicionar Tag (Qualificação Sócio)", key="add_qs_tag_button"):
+            if new_qs_tag.strip() not in st.session_state.custom_tags_qualificacao_socio:
+                st.session_state.custom_tags_qualificacao_socio.append(new_qs_tag.strip())
+                st.rerun()
     else:
-        ia_params['qualificacao_socio'] = [] # Explicitamente define como vazio se desmarcado
+        ia_params['qualificacao_socio'] = []
 
+st.divider() # ou st.markdown("---")
+
+# --- Faixa Etária do Sócio ---
+# Initialize custom_tags_faixa_etaria_socio
+if 'custom_tags_faixa_etaria_socio' not in st.session_state:
+    st.session_state.custom_tags_faixa_etaria_socio = []
+
+col1_fes, col2_fes, col3_fes = st.columns([1, 1, 2])
+with col1_fes:
     use_faixa_etaria_socio = st.checkbox("Incluir Faixa Etária do Sócio", value=False)
+with col2_fes:
+    include_null_fes = st.checkbox("Nulo?", key="ia_fes_null") if use_faixa_etaria_socio else False
+    include_empty_fes = st.checkbox("Vazio?", key="ia_fes_empty") if use_faixa_etaria_socio else False
+with col3_fes:
     if use_faixa_etaria_socio:
-        col_fes_null, col_fes_empty = st.columns(2)
-        with col_fes_null:
-            include_null_fes = st.checkbox("Incluir Faixa Etária do Sócio Nula?", key="ia_fes_null")
-        with col_fes_empty:
-            include_empty_fes = st.checkbox("Incluir Faixa Etária do Sócio Vazia?", key="ia_fes_empty")
-
         top_n_fes = st.slider("Top N Faixas Etárias de Sócio mais frequentes:", min_value=1, max_value=10, value=5, key="ia_top_fes")
         top_fess = get_unique_values(df_clientes, 'faixa_etaria_socio', top_n_fes, include_null=include_null_fes, include_empty=include_empty_fes)
-        if top_fess:
-            ia_params['faixa_etaria_socio'] = st.multiselect("Faixas etárias de sócio selecionadas:", options=top_fess, default=top_fess, key="ia_fes_select")
-        else:
-            st.info("Nenhuma Faixa Etária de Sócio relevante encontrada.")
-            ia_params['faixa_etaria_socio'] = []
+        
+        all_fes_options = list(set(top_fess + st.session_state.custom_tags_faixa_etaria_socio))
+        temp_options = [opt for opt in all_fes_options if opt not in ["(Nulo)", "(Vazio)"]]
+        temp_options.sort()
+        if "(Nulo)" in all_fes_options: temp_options.append("(Nulo)")
+        if "(Vazio)" in all_fes_options: temp_options.append("(Vazio)")
+
+        default_fes_selection = list(set(top_fess + [t for t in st.session_state.custom_tags_faixa_etaria_socio if t in temp_options]))
+        if include_null_fes and "(Nulo)" in temp_options: default_fes_selection.append("(Nulo)")
+        if include_empty_fes and "(Vazio)" in temp_options: default_fes_selection.append("(Vazio)")
+
+        selected_fess = st.multiselect(
+            "Faixas etárias de sócio selecionadas:",
+            options=temp_options,
+            default=list(set(default_fes_selection)),
+            key="ia_fes_select"
+        )
+        ia_params['faixa_etaria_socio'] = selected_fess if selected_fess else []
+
+        new_fes_tag = st.text_input("Adicionar nova Faixa Etária do Sócio:", key="new_fes_tag_input")
+        if new_fes_tag and st.button("Adicionar Tag (Faixa Etária Sócio)", key="add_fes_tag_button"):
+            if new_fes_tag.strip() not in st.session_state.custom_tags_faixa_etaria_socio:
+                st.session_state.custom_tags_faixa_etaria_socio.append(new_fes_tag.strip())
+                st.rerun()
     else:
-        ia_params['faixa_etaria_socio'] = [] # Explicitamente define como vazio se desmarcado
+        ia_params['faixa_etaria_socio'] = []
 
 ia_params['situacao_cadastral'] = 'ATIVA'
 
@@ -952,7 +1288,6 @@ if st.button("🚀 Gerar Leads com IA"):
         st.warning("Não há CNPJs carregados na base do cliente para exclusão. A busca pode incluir clientes existentes.")
 
     with st.spinner("Gerando leads..."):
-        # Garante que ia_params só contenha o que é realmente selecionado/ativo
         final_params_for_query = {k: v for k, v in ia_params.items() if v is not None and not (isinstance(v, list) and not v) and not (isinstance(v, tuple) and not all(v))}
         final_params_for_score = {k: v for k, v in ia_params.items() if v is not None and not (isinstance(v, list) and not v) and not (isinstance(v, tuple) and not all(v))}
 
@@ -967,7 +1302,6 @@ if st.button("🚀 Gerar Leads com IA"):
         try:
             with engine.connect() as conn:
                 df_leads_gerados = pd.read_sql(sql_text_obj, conn, params=query_params_dict)
-                # Remove as colunas temporárias '_found' antes de adicionar as colunas de pontuação/data e salvar
                 if 'cod_cnae_principal_found' in df_leads_gerados.columns:
                     df_leads_gerados = df_leads_gerados.drop(columns=['cod_cnae_principal_found'])
                 if 'cod_cnae_secundario_found' in df_leads_gerados.columns:
@@ -979,7 +1313,6 @@ if st.button("🚀 Gerar Leads com IA"):
 
             for col in df_leads_gerados.columns:
                 if df_leads_gerados[col].dtype == 'object':
-                    # Trata strings vazias em Pandas como None para melhor compatibilidade com SQL NULL ao salvar
                     df_leads_gerados[col] = df_leads_gerados[col].replace('', None).astype(str).replace('None', None) 
                 elif pd.api.types.is_datetime64_any_dtype(df_leads_gerados[col]):
                     df_leads_gerados[col] = df_leads_gerados[col].dt.tz_localize(None)
@@ -1006,7 +1339,6 @@ if 'df_leads_gerados' in st.session_state and st.session_state.df_leads_gerados 
     st.info("Essa pontuação reflete a quantidade e relevância dos critérios utilizados na busca, servindo como um indicador do refinamento do lead.")
 
     st.markdown("**Critérios Utilizados:**")
-    # Filtra os parâmetros para exibição, considerando apenas os que foram realmente usados na query
     used_criteria = {k: v for k, v in ia_params.items() if v is not None and not (isinstance(v, list) and not v) and not (isinstance(v, tuple) and not all(v))}
     
     if used_criteria:
@@ -1017,8 +1349,7 @@ if 'df_leads_gerados' in st.session_state and st.session_state.df_leads_gerados 
                 st.write(f"- **Capital Social:** Entre R$ {value[0]:,.2f} e R$ {value[1]:,.2f}")
             elif param in ['nome_fantasia', 'uf', 'municipio', 'bairro', 'natureza_juridica',
                             'qualificacao_socio', 'faixa_etaria_socio', 'ddd1',
-                            'porte_empresa', 'opcao_simples', 'opcao_opcao_mei', 'nome_socio_razao_social']: # Corrigido 'opcao_opcao_mei' para 'opcao_mei'
-                # Verifica se há o placeholder "(Nulo)" ou "(Vazio)" para exibir corretamente
+                            'porte_empresa', 'opcao_simples', 'opcao_mei', 'nome_socio_razao_social']:
                 display_value = []
                 for item in value:
                     if isinstance(item, tuple) and item[0] in ["(Nulo)", "(Vazio)"]:
@@ -1090,7 +1421,7 @@ if 'df_leads_gerados' in st.session_state and st.session_state.df_leads_gerados 
                                 elif pd.api.types.is_datetime64_any_dtype(df_leads_gerados_filtered[col]):
                                     df_leads_gerados_filtered[col] = df_leads_gerados_filtered[col].dt.tz_localize(None)
                                 elif df_leads_gerados_filtered[col].dtype == 'object':
-                                     df_leads_gerados_filtered[col] = df_leads_gerados_filtered[col].fillna('').replace('None', '') # Garante que NaN vire string vazia antes de salvar
+                                     df_leads_gerados_filtered[col] = df_leads_gerados_filtered[col].fillna('').replace('None', '')
                                     
                             df_leads_gerados_filtered.to_sql(
                                 'tb_leads_gerados',
