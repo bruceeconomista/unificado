@@ -6,16 +6,17 @@ import re
 from collections import Counter
 from unidecode import unidecode
 
+if "df_cnpjs" in st.session_state and "dados_cliente" not in st.session_state: # trecho adicionado para reforçar
+    st.session_state.dados_cliente = st.session_state.df_cnpjs # trecho adicionado para reforçar
+
 def etapa2():
     st.header("2️⃣ Análise Gráfica dos Dados Enriquecidos")
-    
-    if 'df_cnpjs' not in st.session_state:
-        st.session_state.df_cnpjs = None
 
-    df = st.session_state.df_cnpjs
-    if df is None:
-        st.warning("Nenhum dado carregado. Por favor, carregue os dados na etapa anterior.")
-        return
+    df = st.session_state.get("dados_cliente")
+
+    if df is None or df.empty or not isinstance(df, pd.DataFrame):
+        st.warning("Nenhum dado válido carregado. Por favor, volte para a Etapa 1 e carregue os CNPJs.")
+        st.stop()
 
     # Certifica-se de que as colunas necessárias para as análises existentes são numéricas/datetime
     df['capital_social'] = pd.to_numeric(df['capital_social'], errors='coerce').fillna(0)
@@ -27,6 +28,11 @@ def etapa2():
     bins_idade = [0, 1, 2, 3, 5, 10, float('inf')]
     labels_idade = ["≤1", "1-2", "2-3", "3-5", "5-10", ">10"]
     df['faixa_idade'] = pd.cut(df['idade'], bins=bins_idade, labels=labels_idade, right=False)
+
+    st.markdown("---")
+    if st.button("📊 Ir para IA Generator"):
+        st.session_state.dados_cliente = st.session_state.df_cnpjs  # 🔁 reforça persistência
+        st.switch_page("pages/3_IA_Generator.py")
 
     # --- Definição das Abas Principais ---
     tab_titles = [
@@ -40,8 +46,9 @@ def etapa2():
         "Qualificação Sócio",
         "Faixa Etária Sócio"
     ]
-    tabs = st.tabs(tab_titles)
 
+    tabs = st.tabs(tab_titles)
+    
     # --- Aba 1: Palavras Chave (Nome Fantasia) ---
     with tabs[0]:
         st.subheader("📊 Análise de Palavras-Chave no Nome Fantasia")
@@ -172,6 +179,7 @@ def etapa2():
                 st.info("Coluna 'bairro' não encontrada ou está vazia no DataFrame de clientes.")
 
     # --- INÍCIO DA ABA PARA CNAE (AGORA COM GRÁFICO HORIZONTAL E COM CÓDIGO NO DATAFRAME BRUTO) ---
+# --- INÍCIO DA ABA PARA CNAE (AGORA COM GRÁFICO HORIZONTAL E COM CÓDIGO NO DATAFRAME BRUTO) ---
     with tabs[2]: # O índice 2 é para a aba CNAE
         st.subheader("📊 Análise de CNAEs (Principal e Secundário)")
 
@@ -183,49 +191,34 @@ def etapa2():
 
         all_cnaes_info = [] # Armazenará tuplas (código, descrição)
 
+        # REMOVIDA: A função parse_cnae_string não é mais necessária
+
         # Processa CNAE Principal
         if cnae_type == 'CNAE Principal' or cnae_type == 'Ambos':
-            # --- SUBSTITUÍDO: Lógica anterior de parseamento de string CNAE única ---
-            # if 'cnae_principal' in df.columns and not df['cnae_principal'].empty:
-            #     for cnae_str in df['cnae_principal'].dropna().astype(str).tolist():
-            #         code, description = parse_cnae_string(cnae_str)
-            #         if description: 
-            #             all_cnaes_parsed.append((code, description))
-            # else:
-            #     st.info("Coluna 'cnae_principal' não encontrada ou está vazia.")
-
-            # --- ADICIONADO/SUBSTITUÍDO: Nova lógica para usar cnae_principal_cod e cnae_principal ---
-            if 'cnae_principal' in df.columns and 'cnae_principal_cod' in df.columns and not df['cnae_principal'].empty:
-                # Garante que as colunas são strings e remove NaNs
-                temp_df = df[['cnae_principal_cod', 'cnae_principal']].dropna().astype(str)
+            # AGORA USAMOS 'cod_cnae_principal' E 'cnae_principal'
+            if 'cod_cnae_principal' in df.columns and 'cnae_principal' in df.columns and \
+               not df['cod_cnae_principal'].empty and not df['cnae_principal'].empty:
+                
+                temp_df = df[['cod_cnae_principal', 'cnae_principal']].dropna().astype(str)
                 for _, row in temp_df.iterrows():
-                    code = row['cnae_principal_cod'].strip()
+                    code = row['cod_cnae_principal'].strip()
                     description = row['cnae_principal'].strip()
-                    if code and description: # Garante que ambos não são vazios
+                    if code and description: 
                         all_cnaes_info.append((code, description))
             else:
-                st.info("Colunas 'cnae_principal' ou 'cnae_principal_cod' não encontradas ou estão vazias.")
-            # --- FIM ADICIONADO/SUBSTITUÍDO ---
+                st.info("Colunas 'cod_cnae_principal' ou 'cnae_principal' não encontradas ou estão vazias.")
 
         # Processa CNAEs Secundários
         if cnae_type == 'CNAEs Secundários' or cnae_type == 'Ambos':
-            # --- SUBSTITUÍDO: Lógica anterior de split e parseamento de string CNAE secundário ---
-            # if 'cnae_secundario' in df.columns and not df['cnae_secundario'].empty:
-            #     for cnae_list_str in df['cnae_secundario'].dropna().astype(str).tolist():
-            #         for cnae_str in cnae_list_str.split('; '):
-            #             code, description = parse_cnae_string(cnae_str)
-            #             if description: 
-            #                 all_cnaes_parsed.append((code, description))
-            # else:
-            #     st.info("Coluna 'cnae_secundario' não encontrada ou está vazia.")
-
-            # --- ADICIONADO/SUBSTITUÍDO: Nova lógica para usar cnae_secundario_cod e cnae_secundario ---
-            if 'cnae_secundario' in df.columns and 'cnae_secundario_cod' in df.columns and not df['cnae_secundario'].empty:
-                temp_df = df[['cnae_secundario_cod', 'cnae_secundario']].dropna().astype(str)
+            # AGORA USAMOS 'cod_cnae_secundario' E 'cnae_secundario'
+            if 'cod_cnae_secundario' in df.columns and 'cnae_secundario' in df.columns and \
+               not df['cod_cnae_secundario'].empty and not df['cnae_secundario'].empty:
+                
+                temp_df = df[['cod_cnae_secundario', 'cnae_secundario']].dropna().astype(str)
                 for _, row in temp_df.iterrows():
                     # Supondo que tanto o código quanto a descrição podem vir múltiplos, separados por '; '
                     # e que a ordem se mantém entre eles.
-                    codes = row['cnae_secundario_cod'].split('; ') 
+                    codes = row['cod_cnae_secundario'].split('; ') 
                     descriptions = row['cnae_secundario'].split('; ') 
 
                     for i in range(min(len(codes), len(descriptions))):
@@ -234,35 +227,19 @@ def etapa2():
                         if code and description:
                             all_cnaes_info.append((code, description))
             else:
-                st.info("Colunas 'cnae_secundario' ou 'cnae_secundario_cod' não encontradas ou estão vazias.")
-            # --- FIM ADICIONADO/SUBSTITUÍDO ---
+                st.info("Colunas 'cod_cnae_secundario' ou 'cnae_secundario' não encontradas ou estão vazias.")
         
         if all_cnaes_info:
-            # --- SUBSTITUÍDO: Contagem baseada apenas na descrição e uso de desc_to_code ---
-            # desc_to_code = {}
-            # for code, desc in all_cnaes_parsed:
-            #     if desc not in desc_to_code:
-            #         desc_to_code[desc] = code
-            # description_counts = Counter(desc for code, desc in all_cnaes_parsed)
-            # top_cnaes_desc_freq = description_counts.most_common(top_n_cnae)
-            # df_top_cnaes_data = []
-            # for description, frequency in top_cnaes_desc_freq:
-            #     code = desc_to_code.get(description, "N/A") 
-            #     df_top_cnaes_data.append({'CNAE Código': code, 'CNAE Descrição': description, 'Frequência': frequency})
-            
-            # --- ADICIONADO/SUBSTITUÍDO: Contagem de frequência de pares (código, descrição) ---
-            cnae_pair_counts = Counter(all_cnaes_info) # Contagem direta dos pares (código, descrição)
+            cnae_pair_counts = Counter(all_cnaes_info)
             
             top_n_cnae = st.slider("Número de CNAEs para exibir:", min_value=10, max_value=50, value=20, key="top_cnaes_slider_horizontal")
             top_cnaes_pairs_freq = cnae_pair_counts.most_common(top_n_cnae)
 
-            # Construir o DataFrame final com base nos pares contados
             df_top_cnaes_data = []
             for (code, description), frequency in top_cnaes_pairs_freq:
                 df_top_cnaes_data.append({'CNAE Código': code, 'CNAE Descrição': description, 'Frequência': frequency})
             
             df_top_cnaes = pd.DataFrame(df_top_cnaes_data)
-            # --- FIM ADICIONADO/SUBSTITUÍDO ---
 
             # Ordenar por frequência para o gráfico e a tabela
             df_top_cnaes = df_top_cnaes.sort_values('Frequência', ascending=False)
@@ -276,11 +253,7 @@ def etapa2():
                 labels={'CNAE Descrição': 'CNAE (Descrição Completa)', 'Frequência': 'Contagem'}, 
                 color='Frequência',
                 color_continuous_scale=px.colors.sequential.Plasma,
-                # --- SUBSTITUÍDO: hover_data anterior ---
-                # hover_data={'CNAE Código': True, 'CNAE Descrição': True, 'Frequência': True} 
-                # --- ADICIONADO/SUBSTITUÍDO: hover_data atualizado ---
                 hover_data=['CNAE Código', 'CNAE Descrição', 'Frequência'] 
-                # --- FIM ADICIONADO/SUBSTITUÍDO ---
             )
             # Ajustes para melhor visualização do texto no eixo Y (CNAEs)
             fig_cnaes.update_layout(yaxis={'categoryorder':'total ascending'}) 
@@ -291,11 +264,7 @@ def etapa2():
             with st.expander("Ver dados brutos dos CNAEs"):
                 st.dataframe(df_top_cnaes, use_container_width=True) 
         else:
-            # --- SUBSTITUÍDO: Mensagem de erro anterior ---
-            # st.info("Nenhum CNAE válido encontrado para análise. Verifique as colunas 'cnae_principal' e 'cnae_secundario'.")
-            # --- ADICIONADO/SUBSTITUÍDO: Nova mensagem de erro mais específica ---
             st.info("Nenhum CNAE válido encontrado para análise. Verifique as colunas de CNAE e CNAE Código.")
-            # --- FIM ADICIONADO/SUBSTITUÍDO ---
     # --- FIM DA ABA CNAE ---
 
     # --- Abas Existentes (Índices ajustados) ---
@@ -331,23 +300,32 @@ def etapa2():
 
     with tabs[7]: 
         st.subheader("📊 Análise por Qualificação do Sócio")
-        if 'qualificacao_socio' in df.columns and not df['qualificacao_socio'].empty:
-            q_counts = df['qualificacao_socio'].value_counts().reset_index()
-            q_counts.columns = ['Qualificação', 'Total']
-            st.plotly_chart(px.bar(q_counts, x='Qualificação', y='Total', color='Total', title='Qualificação do Sócio', template='plotly_dark'))
+        if 'qualificacoes' in df.columns and not df['qualificacoes'].isna().all():
+            df_q = df[['qualificacoes']].dropna().copy()
+            df_q['qualificacoes'] = df_q['qualificacoes'].astype(str).str.split('|')
+            df_q_exploded = df_q.explode('qualificacoes')
+            df_q_exploded['qualificacoes'] = df_q_exploded['qualificacoes'].str.strip()
+            qual_counts = df_q_exploded['qualificacoes'].value_counts().reset_index()
+            qual_counts.columns = ['Qualificação', 'Total']
+            fig_qual = px.bar(qual_counts, x='Qualificação', y='Total', color='Total', title='Qualificação do Sócio', template='plotly_dark')
+            st.plotly_chart(fig_qual, use_container_width=True)
         else:
-            st.info("Coluna 'qualificacao_socio' não encontrada ou está vazia.")
+            st.info("Coluna 'qualificacoes' não encontrada ou está vazia.")
 
     with tabs[8]: 
         st.subheader("📊 Análise por Faixa Etária do Sócio")
-        if 'faixa_etaria_socio' in df.columns and not df['faixa_etaria_socio'].empty:
-            fe_counts = df['faixa_etaria_socio'].value_counts().reset_index()
+        if 'faixas_etarias' in df.columns and not df['faixas_etarias'].isna().all():
+            df_fe = df[['faixas_etarias']].dropna().copy()
+            df_fe['faixas_etarias'] = df_fe['faixas_etarias'].astype(str).str.split('|')
+            df_fe_exploded = df_fe.explode('faixas_etarias')
+            df_fe_exploded['faixas_etarias'] = df_fe_exploded['faixas_etarias'].str.strip()
+            fe_counts = df_fe_exploded['faixas_etarias'].value_counts().reset_index()
             fe_counts.columns = ['Faixa Etária', 'Total']
-            st.plotly_chart(px.bar(fe_counts, x='Faixa Etária', y='Total', color='Total', title='Faixa Etária do Sócio', template='plotly_dark'))
+            fig_fe = px.bar(fe_counts, x='Faixa Etária', y='Total', color='Total', title='Faixa Etária do Sócio', template='plotly_dark')
+            st.plotly_chart(fig_fe, use_container_width=True)
         else:
             st.info("Coluna 'faixa_etaria_socio' não encontrada ou está vazia.")
 
-# A chamada da função 'etapa2()' deve estar fora dela mesma para ser executada quando o script for rodado.
-# Se este código é parte de um aplicativo Streamlit maior, certifique-se de que etapa2() é chamada
-# no ponto de entrada do seu aplicativo.
+
+
 etapa2()
