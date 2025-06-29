@@ -14,7 +14,7 @@ from unidecode import unidecode
 st.set_page_config(layout="wide", page_title="Diagnóstico e Oportunidades")
 st.title("📊 Diagnóstico e Mapa de Oportunidades")
 
-DATABASE_URL = 
+DATABASE_URL = "postgresql+psycopg2://postgres:0804Bru%21%40%23%24@localhost:5432/empresas"
 
 # Funções auxiliares
 
@@ -27,14 +27,11 @@ def to_excel(df):
 def buscar_dados_enriquecidos(cnpjs):
     engine = create_engine(DATABASE_URL)
     with engine.connect() as conn:
+        # A consulta foi simplificada para usar apenas a tabela visao_empresa_agrupada_base
         query = text("""
-            SELECT v.*,
-                   c1.cod_cnae AS cnae_principal_cod,
-                   c2.cod_cnae AS cnae_secundario_cod
-            FROM visao_empresa_completa v
-            LEFT JOIN tb_cnae c1 ON unaccent(upper(v.cnae_principal)) = unaccent(upper(c1.descricao))
-            LEFT JOIN tb_cnae c2 ON unaccent(upper(v.cnae_secundario)) = unaccent(upper(c2.descricao))
-            WHERE v.cnpj = ANY(:cnpjs)
+            SELECT *
+            FROM visao_empresa_agrupada_base
+            WHERE cnpj = ANY(:cnpjs)
         """).bindparams(cnpjs=ARRAY(String))
         df = pd.read_sql(query, conn, params={"cnpjs": cnpjs})
     return df
@@ -91,4 +88,3 @@ def etapa1():
 
 # Rodar etapa
 etapa1()
-
