@@ -12,7 +12,7 @@ st.set_page_config(layout="wide", page_title="Consulta Avançada de CNPJs + Pesq
 st.title("🔍 Consulta Avançada de Empresas com Filtros SQL")
 
 # --- Conexão com banco de dados ---
-DATABASE_URL = "postgresql+psycopg2://postgres:0804Bru%21%40%23%24@localhost:5432/empresas"
+DATABASE_URL = 
 TABELA = "visao_empresa_agrupada_base"
 
 
