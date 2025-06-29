@@ -28,7 +28,7 @@ def buscar_dados_enriquecidos(cnpjs):
     engine = create_engine(DATABASE_URL)
     with engine.connect() as conn:
         query = text("""
-            SELECT v.cnpj, v.nome_fantasia, v.municipio, v.uf, v.cnae_principal, v.capital_social
+            SELECT v.*
             FROM visao_empresa_agrupada_base v
             JOIN unnest(:cnpjs) WITH ORDINALITY AS temp(cnpj) ON v.cnpj = temp.cnpj
         """)
@@ -46,12 +46,13 @@ if st.session_state.etapa is None:
 def etapa1():
     st.header("1️⃣ Upload de CNPJs e Enriquecimento de Dados")
 
-    # Refazer busca limpa o cache
+    # Botão para refazer, limpando os dados
     if st.button("🔄 Refazer Dados Enriquecidos"):
         st.session_state.df_cnpjs = None
+        st.session_state.df_importado = None
 
-    # Se já temos dados no session_state, mostrar diretamente
-    if st.session_state.df_cnpjs is not None:
+    # ✅ Se dados enriquecidos já estiverem carregados, mostra direto
+    if st.session_state.get("df_cnpjs") is not None:
         st.success(f"{len(st.session_state.df_cnpjs)} registros carregados.")
         st.dataframe(st.session_state.df_cnpjs)
 
@@ -60,32 +61,42 @@ def etapa1():
 
         st.markdown("---")
         if st.button("📊 Ir para Análise Gráfica"):
+            st.session_state.dados_cliente = st.session_state.df_cnpjs  # 🔁 reforça persistência
             st.switch_page("pages/2_Analise_Grafica.py")
 
     else:
-        file = st.file_uploader("Importe sua lista de CNPJs (CSV ou Excel)", type=["csv", "xlsx"])
-        if file:
-            try:
-                df_importado = pd.read_csv(file, sep=';', dtype=str) if file.name.endswith(".csv") else pd.read_excel(file, dtype=str)
-                if "cnpj" not in df_importado.columns:
-                    st.error("O arquivo precisa ter uma coluna chamada 'cnpj'.")
+        # Usa o df importado se já tiver salvo, senão permite upload
+        df_importado = st.session_state.get("df_importado")
+
+        if df_importado is None:
+            file = st.file_uploader("Importe sua lista de CNPJs (CSV ou Excel)", type=["csv", "xlsx"])
+            if file:
+                try:
+                    df_importado = pd.read_csv(file, sep=';', dtype=str) if file.name.endswith(".csv") else pd.read_excel(file, dtype=str)
+                    if "cnpj" not in df_importado.columns:
+                        st.error("O arquivo precisa ter uma coluna chamada 'cnpj'.")
+                        return
+
+                    st.session_state.df_importado = df_importado  # 🔒 SALVA PARA MANUTER APÓS RERUN
+
+                except Exception as e:
+                    st.error(f"Erro ao ler o arquivo: {e}")
                     return
 
-                cnpjs_lista = df_importado["cnpj"].dropna().astype(str).tolist()
-                st.success(f"{len(cnpjs_lista)} CNPJs carregados.")
+        # Se o df_importado está definido, mostra botão para buscar dados
+        if df_importado is not None:
+            cnpjs_lista = df_importado["cnpj"].dropna().astype(str).tolist()
+            st.success(f"{len(cnpjs_lista)} CNPJs carregados.")
 
-                if st.button("🔍 Buscar Dados Enriquecidos"):
-                    df_enriquecido = buscar_dados_enriquecidos(cnpjs_lista)
-                    if df_enriquecido.empty:
-                        st.warning("Nenhum dado encontrado.")
-                    else:
-                        st.session_state.df_cnpjs = df_enriquecido
-                        st.session_state.cliente_carregado = True
-                        st.session_state.dados_cliente = df_enriquecido
-                        st.rerun()  # Força redesenho da tela com os dados preenchidos
-
-            except Exception as e:
-                st.error(f"Erro: {e}")
+            if st.button("🔍 Buscar Dados Enriquecidos"):
+                df_enriquecido = buscar_dados_enriquecidos(cnpjs_lista)
+                if df_enriquecido.empty:
+                    st.warning("Nenhum dado encontrado.")
+                else:
+                    st.session_state.df_cnpjs = df_enriquecido
+                    st.session_state.cliente_carregado = True
+                    st.session_state.dados_cliente = df_enriquecido
+                    st.rerun()  # Recarrega a tela já com os dados prontos
 
 # Rodar etapa
 etapa1()
