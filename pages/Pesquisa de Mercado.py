@@ -207,6 +207,12 @@ def montar_sql(f, limit):
             op = ">=" if 'min' in key else "<="
             where.append(f"DATE_PART('year', AGE(CURRENT_DATE, data_inicio_atividade)) {op} {f[key]}")
 
+    # Quantidade de Sócios
+    if f.get('qtde_socios_min') is not None:
+        where.append(f"qtde_socios >= {f['qtde_socios_min']}")
+    if f.get('qtde_socios_max') is not None:
+        where.append(f"qtde_socios <= {f['qtde_socios_max']}")
+
     # Filtro por código CNAE direto (agora já está na tabela)
     if f.get('cod_cnae_termos'):
         termos_cnae = [t.strip() for t in f['cod_cnae_termos'] if t.strip()]
@@ -519,6 +525,11 @@ with tab_consulta:
 
         faixa_etaria_socio_input = st.text_input("Faixa Etária Sócio (termos separados por vírgula)", help="Ex: 'Entre 21 a 30 anos, Entre 31 a 40 anos'", key="faixa_etaria_socio_input")
 
+        col_qtde_min, col_qtde_max = st.columns(2)
+        with col_qtde_min:
+            qtde_socios_min = st.number_input("Qtde Sócios Mínima", min_value=0, value=None, step=1, format="%d", key="qtde_socios_min")
+        with col_qtde_max:
+            qtde_socios_max = st.number_input("Qtde Sócios Máxima", min_value=0, value=None, step=1, format="%d", key="qtde_socios_max")
 
     limit_resultados = st.slider("Número Máximo de Resultados (LIMIT)", min_value=1000, max_value=100000, value=5000, step=1000, key="limit_resultados")
 
@@ -544,7 +555,9 @@ with tab_consulta:
             'idade_max': idade_max,
             'porte_selecionado': porte_selecionado,
             'qualificacao_socio_termos': [t.strip() for t in qualificacao_socio_input.split(',') if t.strip()],
-            'faixa_etaria_socio_termos': [t.strip() for t in faixa_etaria_socio_input.split(',') if t.strip()]
+            'faixa_etaria_socio_termos': [t.strip() for t in faixa_etaria_socio_input.split(',') if t.strip()],
+            'qtde_socios_min': qtde_socios_min,
+            'qtde_socios_max': qtde_socios_max
         }
 
         sql_final = montar_sql(filtros, limit_resultados)
