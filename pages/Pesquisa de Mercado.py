@@ -124,6 +124,16 @@ def get_cnae_counts_for_market_research(df_input):
 def montar_sql(f, limit):
     where = ["situacao_cadastral = 'ATIVA'"]
 
+    def regex_pipe_field_clauses(col, termos):
+        clauses = []
+        for termo in termos:
+            termo = termo.strip()
+            if termo:
+                termo_regex = f"(^|\\|\\s*){re.escape(termo)}(\\s*\\||$)"
+                clauses.append(f"{col} ~* '{termo_regex}'")
+        return clauses
+
+
     def ilike_clauses(col, termos):
         return [f"{col} ILIKE unaccent('%{t}%')" for t in termos if t.strip()]
 
@@ -141,7 +151,7 @@ def montar_sql(f, limit):
             where.append(f"({' OR '.join(clauses)})")
 
     # Filtros por texto (com campos normalizados)
-    texto_fields = {
+    texto_fields_normais = {
         'razao_social': 'razao_social_normalizado',
         'nome_fantasia': 'nome_fantasia_normalizado',
         'cnae_principal': 'cnae_principal_normalizado',
@@ -149,13 +159,22 @@ def montar_sql(f, limit):
         'bairro': 'bairro_normalizado',
         'ddd': 'ddd1',
         'logradouro': 'logradouro',
-        'qualificacao_socio': 'qualificacao_socio',
-        'faixa_etaria_socio': 'faixa_etaria_socio'
     }
 
-    for key, column in texto_fields.items():
+    for key, column in texto_fields_normais.items():
         termos = f.get(f"{key}_termos", [])
         clauses = ilike_clauses(column, termos)
+        if clauses:
+            where.append(f"({' OR '.join(clauses)})")
+
+    pipe_fields = {
+        'qualificacao_socio_termos': 'qualificacoes',
+        'faixa_etaria_socio_termos': 'faixas_etarias'
+        }
+    
+    for key, column in pipe_fields.items():
+        termos = f.get(key, [])
+        clauses = regex_pipe_field_clauses(column, termos)
         if clauses:
             where.append(f"({' OR '.join(clauses)})")
 
