@@ -17,7 +17,7 @@ def normalize_text(value):
     return value
 
 # Conexão com o banco de dados
-DATABASE_URL = "postgresql+psycopg2://postgres:0804Bru%21%40%23%24@localhost:5432/empresas"
+DATABASE_URL = 
 engine = create_engine(DATABASE_URL)
 
 # --- Estados da Sessão ---
@@ -354,13 +354,18 @@ def ensure_leads_table_exists(df_to_save, table_name, expected_cols, engine):
             st.error(f"Erro na configuração da chave primária da tabela {table_name}: {e}")
             raise
 
+# Compatibilidade com chave antiga, se necessário
+if "df_cnpjs" in st.session_state and "dados_cliente" not in st.session_state: # trecho adicionado para reforçar
+    st.session_state.dados_cliente = st.session_state.df_cnpjs # trecho adicionado para reforçar
+
 # --- Início da UI Streamlit ---
-if 'df_cnpjs' not in st.session_state or st.session_state.df_cnpjs is None:
-    st.warning("Nenhum dado de cliente carregado. Por favor, carregue e enriqueça os dados na Etapa 1.")
-    st.info("Você será redirecionado para a Etapa 1.")
+df_clientes = st.session_state.get("dados_cliente")
+
+if df_clientes is None or not isinstance(df_clientes, pd.DataFrame) or df_clientes.empty:
+    st.warning("Nenhum dado válido carregado. Por favor, volte para a Etapa 1 e carregue os CNPJs.")
     st.stop()
 
-df_clientes = st.session_state.df_cnpjs
+# Só chega aqui se o df_clientes for um DataFrame válido
 cnpjs_para_excluir = set(df_clientes['cnpj'].dropna().astype(str).tolist()) if 'cnpj' in df_clientes.columns else set()
 
 # Inicializar tags customizadas para os diversos filtros (exemplo para UF, Município, etc.)
