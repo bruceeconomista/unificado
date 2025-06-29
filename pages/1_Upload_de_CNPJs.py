@@ -14,7 +14,7 @@ from unidecode import unidecode
 st.set_page_config(layout="wide", page_title="Diagnóstico e Oportunidades")
 st.title("📊 Diagnóstico e Mapa de Oportunidades")
 
-DATABASE_URL = "postgresql+psycopg2://postgres:0804Bru%21%40%23%24@localhost:5432/empresas"
+DATABASE_URL = 
 
 # Funções auxiliares
 
@@ -27,13 +27,12 @@ def to_excel(df):
 def buscar_dados_enriquecidos(cnpjs):
     engine = create_engine(DATABASE_URL)
     with engine.connect() as conn:
-        # A consulta foi simplificada para usar apenas a tabela visao_empresa_agrupada_base
         query = text("""
-            SELECT *
-            FROM visao_empresa_agrupada_base
-            WHERE cnpj = ANY(:cnpjs)
-        """).bindparams(cnpjs=ARRAY(String))
-        df = pd.read_sql(query, conn, params={"cnpjs": cnpjs})
+            SELECT v.cnpj, v.nome_fantasia, v.municipio, v.uf, v.cnae_principal, v.capital_social
+            FROM visao_empresa_agrupada_base v
+            JOIN unnest(:cnpjs) WITH ORDINALITY AS temp(cnpj) ON v.cnpj = temp.cnpj
+        """)
+        df = pd.read_sql(query, conn, params={"cnpjs": list(cnpjs)})
     return df
 
 # Inicialização de estados
@@ -81,6 +80,8 @@ def etapa1():
                         st.warning("Nenhum dado encontrado.")
                     else:
                         st.session_state.df_cnpjs = df_enriquecido
+                        st.session_state.cliente_carregado = True
+                        st.session_state.dados_cliente = df_enriquecido
                         st.rerun()  # Força redesenho da tela com os dados preenchidos
 
             except Exception as e:
