@@ -4,6 +4,7 @@ import pandas as pd
 from io import BytesIO
 import plotly.express as px
 
+
 st.set_page_config(layout="wide", page_title="Diagnóstico e Oportunidades")
 st.title("📍 Mapa de Oportunidades")
 
@@ -20,14 +21,17 @@ df_universo = st.session_state.get("df_oportunidades")
 df_coords = st.session_state.get("df_coords")
 tipo_coords = st.session_state.get("df_coords_tipo")
 
-if df_cliente is None or df_universo is None or df_coords is None or tipo_coords is None:
+if df_universo is None or df_coords is None or tipo_coords is None:
     st.warning("⚠️ Carregue os dados na etapa 3 antes de acessar o mapa.")
     st.stop()
 
 # Preparação
 df_universo['cnpj'] = df_universo['cnpj'].astype(str).str.zfill(14)
-df_cliente['cnpj'] = df_cliente['cnpj'].astype(str).str.zfill(14)
-df_oportunidades = df_universo[~df_universo['cnpj'].isin(df_cliente['cnpj'])].copy()
+if df_cliente is not None:
+    df_cliente['cnpj'] = df_cliente['cnpj'].astype(str).str.zfill(14)
+    df_oportunidades = df_universo[~df_universo['cnpj'].isin(df_cliente['cnpj'])].copy()
+else:
+    df_oportunidades = df_universo.copy()
 
 if df_oportunidades.empty:
     st.warning("Todas as oportunidades já estão atendidas.")
@@ -60,10 +64,13 @@ elif tipo_coords == "bairro":
         df_oportunidades[col] = df_oportunidades[col].str.upper().str.strip()
         df_coords[col] = df_coords[col].str.upper().str.strip()
 
-    df_oportunidades['bairro'] = df_oportunidades['bairro'].apply(normalizar_bairro)
-    df_coords['bairro'] = df_coords['bairro'].apply(normalizar_bairro)
+    df_oportunidades['capital_social'] = pd.to_numeric(df_oportunidades['capital_social'], errors='coerce').fillna(0)
 
-    grupo = df_oportunidades.groupby(['uf', 'municipio', 'bairro']).size().reset_index(name='qtd_oportunidades')
+    grupo = df_oportunidades.groupby(['uf', 'municipio', 'bairro']).agg(
+        qtd_oportunidades=('cnpj', 'count'),
+        capital_total=('capital_social', 'sum')
+    ).reset_index()
+
     df_mapa = pd.merge(grupo, df_coords[['uf', 'municipio', 'bairro', 'latitude', 'longitude']], on=['uf', 'municipio', 'bairro'], how='left')
 
     df_mapa['chave'] = df_mapa['uf'] + ' | ' + df_mapa['municipio'] + ' | ' + df_mapa['bairro']
@@ -110,24 +117,30 @@ if visualizacao == "Quantidade de Empresas":
                       "Qtd Oportunidades: %{marker.size:,}<br><extra></extra>"
     )
 
+    
 elif visualizacao == "Capital Social":
+    import numpy as np
+    df_mapa['capital_total_log'] = df_mapa['capital_total'].apply(lambda x: np.log1p(x))
+
     fig = px.scatter_mapbox(
         df_mapa,
         lat='latitude',
         lon='longitude',
-        size='capital_total',
-        color='qtd_oportunidades',
+        size='capital_total_log',
+        color='capital_total_log',
         color_continuous_scale=px.colors.sequential.Plasma_r,
         hover_name=hover,
         mapbox_style="open-street-map",
         template="plotly_dark",
         size_max=50,
         zoom=4,
-        height=700
+        height=700,
+        custom_data=['capital_total']
     )
+
     fig.update_traces(
         hovertemplate="<b>%{hovertext}</b><br>" +
-                      "Capital Total: R$ %{marker.size:,.2f}<br><extra></extra>"
+                      "Capital Total: R$ %{customdata[0]:,.2f}<br><extra></extra>"
     )
 
 fig.update_layout(
