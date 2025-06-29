@@ -12,8 +12,8 @@ st.set_page_config(layout="wide", page_title="Consulta Avançada de CNPJs + Pesq
 st.title("🔍 Consulta Avançada de Empresas com Filtros SQL")
 
 # --- Conexão com banco de dados ---
-DATABASE_URL = 
-TABELA = "visao_empresa_completa"
+DATABASE_URL = "postgresql+psycopg2://postgres:0804Bru%21%40%23%24@localhost:5432/empresas"
+TABELA = "visao_empresa_agrupada_base"
 
 
 def get_database_engine_for_app(db_url):
@@ -121,35 +121,60 @@ def get_cnae_counts_for_market_research(df_input):
     df_cnaes = pd.DataFrame(cnae_counts.items(), columns=['CNAE', 'Total'])
     return df_cnaes.sort_values('Total', ascending=False)
 
-
 def montar_sql(f, limit):
     where = ["situacao_cadastral = 'ATIVA'"]
 
     def ilike_clauses(col, termos):
-        return [f"unaccent({col}) ILIKE unaccent('%{t}%')" for t in termos if t.strip()]
+        return [f"{col} ILIKE unaccent('%{t}%')" for t in termos if t.strip()]
 
     def in_clause(col, lista):
         l = [f"'{x.replace(chr(39), chr(39)*2)}'" for x in lista if x.strip()]
         return f"{col} IN ({','.join(l)})" if l else ""
 
-    for key in ['nome_fantasia','cnae_principal',
-                 'natureza_juridica','municipio','bairro','ddd1','logradouro',
-                 'qualificacao_socio','faixa_etaria_socio']:
-        termos = f.get(key+'_termos') or f.get(key.replace('_descricao','')+'_termos', [])
-        clauses = ilike_clauses(key, termos)
+    # Sempre começar com UF e Município
+    if f.get('uf_selecionada'):
+        where.append(in_clause('uf_normalizado', f['uf_selecionada']))
+    if f.get('municipio_termos'):
+        termos = f['municipio_termos']
+        clauses = ilike_clauses('municipio_normalizado', termos)
         if clauses:
             where.append(f"({' OR '.join(clauses)})")
 
-    if f.get('uf_selecionada'):
-        where.append(in_clause('uf', f['uf_selecionada']))
+    # Filtros por texto (com campos normalizados)
+    texto_fields = {
+        'razao_social': 'razao_social_normalizado',
+        'nome_fantasia': 'nome_fantasia_normalizado',
+        'cnae_principal': 'cnae_principal_normalizado',
+        'natureza_juridica': 'natureza_juridica',
+        'bairro': 'bairro_normalizado',
+        'ddd': 'ddd1',
+        'logradouro': 'logradouro',
+        'qualificacao_socio': 'qualificacao_socio',
+        'faixa_etaria_socio': 'faixa_etaria_socio'
+    }
+
+    for key, column in texto_fields.items():
+        termos = f.get(f"{key}_termos", [])
+        clauses = ilike_clauses(column, termos)
+        if clauses:
+            where.append(f"({' OR '.join(clauses)})")
+
+    # Filtros por valores fixos
     if f.get('porte_selecionado'):
         where.append(in_clause('porte_empresa', f['porte_selecionado']))
 
+    if f.get('opcao_simples') in ['S', 'N']:
+        where.append(f"opcao_simples = '{f['opcao_simples']}'")
+    if f.get('opcao_mei') in ['S', 'N']:
+        where.append(f"opcao_mei = '{f['opcao_mei']}'")
+
+    # Filtros por capital
     if f.get('capital_social_min') is not None:
         where.append(f"capital_social >= {f['capital_social_min']}")
     if f.get('capital_social_max') is not None:
         where.append(f"capital_social <= {f['capital_social_max']}")
 
+    # Filtros por datas
     if f.get('data_abertura_apos'):
         dt_str = f['data_abertura_apos'].strftime("%Y-%m-%d")
         where.append(f"data_inicio_atividade >= '{dt_str}'")
@@ -157,33 +182,22 @@ def montar_sql(f, limit):
         dt_str = f['data_abertura_antes'].strftime("%Y-%m-%d")
         where.append(f"data_inicio_atividade <= '{dt_str}'")
 
-    for key in ['idade_min','idade_max']:
+    # Filtros por idade
+    for key in ['idade_min', 'idade_max']:
         if f.get(key) is not None:
             op = ">=" if 'min' in key else "<="
             where.append(f"DATE_PART('year', AGE(CURRENT_DATE, data_inicio_atividade)) {op} {f[key]}")
-    
-    if f.get('cod_cnae_termos'): #ADICIONADO
+
+    # Filtro por código CNAE direto (agora já está na tabela)
+    if f.get('cod_cnae_termos'):
         termos_cnae = [t.strip() for t in f['cod_cnae_termos'] if t.strip()]
         if termos_cnae:
             termos_str = ','.join(f"'{t}'" for t in termos_cnae)
-            where.append(f"(cnae_pri.cod_cnae IN ({termos_str}) OR cnae_sec.cod_cnae IN ({termos_str}))")
-
-    if f.get('opcao_simples') in ['S', 'N']:
-        where.append(f"opcao_simples = '{f['opcao_simples']}'")    
-
-    if f.get('opcao_mei') in ['S', 'N']:
-        where.append(f"opcao_mei = '{f['opcao_mei']}'")                
+            where.append(f"(cod_cnae_principal IN ({termos_str}) OR cod_cnae_secundario ILIKE ANY (ARRAY[{termos_str}]))")
 
     sql = f"""
-    SELECT 
-        vc.*, 
-        cnae_pri.cod_cnae AS cod_cnae_principal, 
-        cnae_sec.cod_cnae AS cod_cnae_secundario
-    FROM {TABELA} vc
-    LEFT JOIN tb_cnae cnae_pri 
-        ON unaccent(vc.cnae_principal) = unaccent(cnae_pri.descricao)
-    LEFT JOIN tb_cnae cnae_sec 
-        ON unaccent(vc.cnae_secundario) = unaccent(cnae_sec.descricao)
+    SELECT *
+    FROM {TABELA}
     """
 
     if where:
@@ -436,6 +450,7 @@ with tab_consulta:
 
     with col1:
         st.subheader("Filtros de Texto e CNAE")
+        razao_social_input = st.text_input("Razão Social (termos separados por vírgula)", help="Ex: 'MERCADO, TRANSPORTES'", key="razao_social_input")
         nome_fantasia_input = st.text_input("Nome Fantasia (termos separados por vírgula)", help="Ex: 'mercado, padaria'", key="nome_fantasia_input")
         cnaes_input = st.text_input("CNAE (código ou descrição, termos separados por vírgula)", help="Ex: '4711, comércio varejista'", key="cnaes_input")
         cod_cnae_input = st.text_input("Códigos CNAE (somente numéricos, separados por vírgula)",help="Ex: '4711-3/02, 5611-2/01'",key="cod_cnae_input") #INCLUSÃO FILTRO CNAE
@@ -490,6 +505,7 @@ with tab_consulta:
 
     if st.button("🔎 Realizar Consulta", key="btn_realizar_consulta"):
         filtros = {
+            'razao_social_termos': [t.strip() for t in razao_social_input.split(',') if t.strip()],
             'nome_fantasia_termos': [t.strip() for t in nome_fantasia_input.split(',') if t.strip()],
             'cnaes_termos': [t.strip() for t in cnaes_input.split(',') if t.strip()],
             'cod_cnae_termos': [t.strip() for t in cod_cnae_input.split(',') if t.strip()], #ADICIONADO
@@ -532,7 +548,21 @@ with tab_consulta:
 
     if st.session_state.df_cnpjs is not None and not st.session_state.df_cnpjs.empty:
         st.markdown("### 📋 Resultados da Consulta")
-        st.dataframe(st.session_state.df_cnpjs, use_container_width=True)
+        #st.dataframe(st.session_state.df_cnpjs, use_container_width=True) --se ativo mostra todas as colunas do Dataframe
+        colunas_para_omitir = [
+            'razao_social_normalizado',
+            'nome_fantasia_normalizado',
+            'municipio_normalizado',
+            'bairro_normalizado',
+            'uf_normalizado',
+            'cnae_principal_normalizado',
+            'cnae_secundario_normalizado'  # adicione outras colunas se necessário
+        ]
+
+        df_visivel = st.session_state.df_cnpjs.drop(columns=[c for c in colunas_para_omitir if c in st.session_state.df_cnpjs.columns])
+
+        st.dataframe(df_visivel, use_container_width=True)
+
 
         total_cnpjs_distintos = st.session_state.df_cnpjs['cnpj'].nunique()
         st.markdown(f"**🔢 Total de CNPJs distintos encontrados:** {total_cnpjs_distintos:,}")
@@ -638,13 +668,15 @@ with tab_pesquisa_mercado:
 
             if filtro_uf_pesquisa:
                 ufs_str = "', '".join(filtro_uf_pesquisa)
-                dedicated_filters_sql_clause.append(f"uf IN ('{ufs_str}')")
+                dedicated_filters_sql_clause.append(f"uf_normalizado IN ('{ufs_str}')")
+
             if filtro_municipio_pesquisa:
                 municipios_str = "', '".join(filtro_municipio_pesquisa)
-                dedicated_filters_sql_clause.append(f"unaccent(municipio) IN ('{municipios_str}')")
+                dedicated_filters_sql_clause.append(f"municipio_normalizado IN ('{municipios_str}')")
+
             if filtro_nome_fantasia_pesquisa:
                 nomes_fantasia_termos = [f"%{termo.strip()}%" for termo in filtro_nome_fantasia_pesquisa.split(',')]
-                termos_ilike = [f"unaccent(nome_fantasia) ILIKE '{termo}'" for termo in nomes_fantasia_termos]
+                termos_ilike = [f"nome_fantasia_normalizado ILIKE '{termo}'" for termo in nomes_fantasia_termos if termo.strip()]
                 dedicated_filters_sql_clause.append(f"({' OR '.join(termos_ilike)})")
 
             final_dedicated_filter_sql = ""
@@ -653,19 +685,19 @@ with tab_pesquisa_mercado:
 
             sql_crescimento = f"""
             SELECT
-                uf,
-                municipio,
-                unaccent({coluna_agrupamento}) AS {coluna_agrupamento},
+                uf_normalizado AS uf,
+                municipio_normalizado AS municipio,
+                {coluna_agrupamento}_normalizado AS {coluna_agrupamento},
                 COUNT(cnpj) AS total_empresas
             FROM
                 {TABELA}
             WHERE
                 data_inicio_atividade >= '{data_limite.strftime('%Y-%m-%d')}'
                 AND situacao_cadastral = 'ATIVA'
-                AND {coluna_agrupamento} IS NOT NULL
+                AND {coluna_agrupamento}_normalizado IS NOT NULL
                 {final_dedicated_filter_sql}
             GROUP BY
-                unaccent({coluna_agrupamento}), uf, municipio
+                {coluna_agrupamento}_normalizado, uf_normalizado, municipio_normalizado
             ORDER BY
                 total_empresas DESC
             LIMIT 10000;
