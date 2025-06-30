@@ -17,7 +17,7 @@ def normalize_text(value):
     return value
 
 # Conexão com o banco de dados
-DATABASE_URL = 
+DATABASE_URL = "postgresql+psycopg2://postgres:0804Bru%21%40%23%24@localhost:5432/empresas"
 engine = create_engine(DATABASE_URL)
 
 # --- Estados da Sessão ---
@@ -32,12 +32,14 @@ if 'df_cnpjs' not in st.session_state:
     st.session_state.df_cnpjs = None
 if 'df_leads_gerados' not in st.session_state:
     st.session_state.df_leads_gerados = pd.DataFrame()
+if 'custom_tags_qtde_socios' not in st.session_state:
+        st.session_state.custom_tags_qtde_socios = []
 
 PONTUACAO_PARAMETROS = {
     'nome_fantasia': 10,
     'uf': 5,
     'municipio': 5,
-    'bairro': 10,
+    'bairro': 5,
     'cod_cnae_principal': 10,
     'cod_cnae_secundario': 10,
     'data_inicio_atividade': 5,
@@ -48,7 +50,8 @@ PONTUACAO_PARAMETROS = {
     'opcao_mei': 5,
     'situacao_cadastral': 0,
     'ddd1': 10,
-        'qualificacao_socio': 5,
+    'qtde_socios': 5,
+    'qualificacao_socio': 5,
     'faixa_etaria_socio': 5
 }
 
@@ -68,25 +71,22 @@ def get_unique_values(df, column, top_n=None, include_null=False, include_empty=
         return []
 
     temp_series = df[column].astype(str)
-    unique_values_list = []
+    all_parts = []
 
-    actual_values = temp_series[~temp_series.isna() & (temp_series.str.strip() != "")].tolist()
-    if actual_values:
-        counts = pd.Series(actual_values).value_counts()
-        unique_values_list.extend(counts.index.tolist())
-    
+    for val in temp_series.dropna():
+        parts = [x.strip() for x in str(val).split('|') if x.strip()]
+        all_parts.extend(parts)
+
+    counts = pd.Series(all_parts).value_counts()
+    unique_values_list = counts.index.tolist()
+
     if include_null and df[column].isna().any():
         unique_values_list.append("(Nulo)")
     if include_empty and (df[column].astype(str).str.strip() == "").any():
         unique_values_list.append("(Vazio)")
-    
+
     if top_n and len(unique_values_list) > top_n:
-        filtered_list = unique_values_list[:top_n]
-        if "(Nulo)" in unique_values_list and "(Nulo)" not in filtered_list:
-            filtered_list.append("(Nulo)")
-        if "(Vazio)" in unique_values_list and "(Vazio)" not in filtered_list:
-            filtered_list.append("(Vazio)")
-        return list(dict.fromkeys(filtered_list))
+        return unique_values_list[:top_n]
     return unique_values_list
 
 @st.cache_data
@@ -95,25 +95,27 @@ def get_top_n_words(df, column, top_n, stop_words, include_null=False, include_e
         return []
 
     all_words = []
-    
     def clean_and_tokenize(text):
         if pd.isna(text) or str(text).strip() == "":
             return []
-        text = unidecode(str(text).strip().lower())
-        text = re.sub(r'[^\w\s]', '', text)
-        text = re.sub(r'\d+', '', text)
-        words = [word for word in text.split() if word not in stop_words and len(word) > 1]
+        parts = text.split('|')
+        words = []
+        for part in parts:
+            part = unidecode(part.strip().lower())
+            part = re.sub(r'[^\w\s]', '', part)
+            part = re.sub(r'\d+', '', part)
+            words.extend([w for w in part.split() if w not in stop_words and len(w) > 1])
         return words
 
-    temp_series = df[column][df[column].notna() & (df[column].astype(str).str.strip() != "")]
+    temp_series = df[column].dropna()
     all_words = temp_series.apply(clean_and_tokenize).explode().dropna().tolist()
 
     word_counts = Counter(all_words)
     common_words = [word for word, count in word_counts.most_common(top_n)]
 
-    if include_null and df[column].isna().any() and "(Nulo)" not in common_words:
+    if include_null and df[column].isna().any():
         common_words.append("(Nulo)")
-    if include_empty and (df[column].astype(str).str.strip() == "").any() and "(Vazio)" not in common_words:
+    if include_empty and (df[column].astype(str).str.strip() == "").any():
         common_words.append("(Vazio)")
     return common_words
 
@@ -152,6 +154,7 @@ def get_top_n_cnaes(df, cnae_type, top_n, include_null=False, include_empty=Fals
 # --- Geração da query SQL sem JOIN com tb_cnae ---
 
 def generate_sql_query(params, base_view, excluded_cnpjs_set=None):
+    params['situacao_cadastral'] = ['ATIVA'] #adiconado para sempre ter essa condição
     from sqlalchemy import text
 
     col_map = {
@@ -167,6 +170,8 @@ def generate_sql_query(params, base_view, excluded_cnpjs_set=None):
         'natureza_juridica': 'natureza_juridica',
         'opcao_simples': 'opcao_simples',
         'opcao_mei': 'opcao_mei',
+        'qtde_socios': 'qtde_socios',
+        'nome_socio_razao_social': 'nomes_socios',
         'qualificacao_socio': 'qualificacoes',
         'faixa_etaria_socio': 'faixas_etarias',
         'ddd1': 'ddd1'
@@ -204,6 +209,7 @@ def generate_sql_query(params, base_view, excluded_cnpjs_set=None):
             query_params[key] = val
         if mun_conditions:
             conditions.append("(" + " OR ".join(mun_conditions) + ")")
+    
 
     # 4. Outros filtros
     for param, value in params.items():
@@ -216,7 +222,7 @@ def generate_sql_query(params, base_view, excluded_cnpjs_set=None):
             continue
 
         if param in ['bairro', 'porte_empresa', 'natureza_juridica', 'opcao_simples',
-                     'opcao_mei', 'qualificacao_socio', 'faixa_etaria_socio', 'ddd1']:
+                     'opcao_mei','ddd1']:
             actual_values = [normalize_text(v) for v in value if v not in ("(Nulo)", "(Vazio)")]
             include_null = "(Nulo)" in value
             include_empty = "(Vazio)" in value
@@ -233,7 +239,7 @@ def generate_sql_query(params, base_view, excluded_cnpjs_set=None):
                 conditions.append("(" + " OR ".join(param_conditions) + ")")
             param_counter += 1
 
-        elif param in ['nome_fantasia', 'nome_socio_razao_social']:
+        elif param in ['nome_fantasia', 'nome_socio_razao_social', 'qualificacao_socio', 'faixa_etaria_socio']:
             word_conditions = []
             include_null = "(Nulo)" in value
             include_empty = "(Vazio)" in value
@@ -242,7 +248,7 @@ def generate_sql_query(params, base_view, excluded_cnpjs_set=None):
                     continue
                 key = f"{param}_{param_counter}"
                 query_params[key] = f"%{normalize_text(word)}%"
-                word_conditions.append(f"{col_name} ILIKE :{key}")
+                word_conditions.append(f"unaccent(upper({col_name})) ILIKE unaccent(upper(:{key}))")
                 param_counter += 1
             if include_null:
                 word_conditions.append(f"{col_name} IS NULL")
@@ -278,6 +284,25 @@ def generate_sql_query(params, base_view, excluded_cnpjs_set=None):
                 param_counter += 1
             if cnae_conditions:
                 conditions.append("(" + " OR ".join(cnae_conditions) + ")")
+
+        elif param == 'qtde_socios':
+            actual_values = [int(v) for v in value if v not in ("(Nulo)", "(Vazio)") and str(v).isdigit()]
+            include_null = "(Nulo)" in value
+            include_empty = "(Vazio)" in value
+            param_conditions = []
+            for i, val in enumerate(actual_values):
+                key = f"{param}_{param_counter}_{i}"
+                param_conditions.append(f"{col_name} = :{key}")
+                query_params[key] = val
+            if include_null:
+                param_conditions.append(f"{col_name} IS NULL")
+            if include_empty:
+                param_conditions.append(f"{col_name} = ''")
+            if param_conditions:
+                conditions.append("(" + " OR ".join(param_conditions) + ")")
+            param_counter += 1
+
+    
 
     # 5. Exclusão por CNPJ
     if excluded_cnpjs_set:
@@ -659,7 +684,7 @@ with col2_porte:
     include_empty_porte = st.checkbox("Vazio?", key="ia_porte_empty") if use_porte else False
 with col3_porte:
     if use_porte:
-        base_portes = ["MICRO EMPRESA", "EMPRESA DE PEQUENO PORTE", "DEMAIS"]
+        base_portes = ["NÃO INFORMADO","MICRO EMPRESA", "EMPRESA DE PEQUENO PORTE", "DEMAIS"]
         unique_portes = df_clientes['porte_empresa'].dropna().unique().tolist()
         all_portes = list(set(base_portes + unique_portes + st.session_state.custom_tags_porte_empresa))
         temp_portes = [opt for opt in all_portes if opt not in ("(Nulo)", "(Vazio)")]
@@ -806,28 +831,83 @@ with col3_ddd:
     else:
         ia_params['ddd1'] = []
 
+
+# --- Quantidade de Sócios ---
+col1_qtdsocio, col2_qtdsocio, col3_qtdsocio = st.columns([1, 1, 2])
+with col1_qtdsocio:
+    use_qtdsocio = st.checkbox("Incluir Quantidade de Sócios", value=False)
+with col2_qtdsocio:
+    include_null_qtdsocio = st.checkbox("Nulo?", key="ia_qtdsocio_null") if use_qtdsocio else False
+    include_empty_qtdsocio = st.checkbox("Vazio?", key="ia_qtdsocio_empty") if use_qtdsocio else False
+with col3_qtdsocio:
+    if use_qtdsocio:
+        top_n_qtdsocio = st.slider("Top N Quantidades de Sócios mais frequentes:", min_value=1, max_value=20, value=5, key="ia_top_qtdsocio")
+        top_qtdsocio = get_unique_values(df_clientes, 'qtde_socios', top_n_qtdsocio, include_null=include_null_qtdsocio, include_empty=include_empty_qtdsocio)
+
+        def safe_int_str(v):
+            try:
+                return str(int(float(v)))
+            except:
+                return None
+
+        all_qtdsocio = list(set(
+            [res for res in [safe_int_str(v) for v in top_qtdsocio] if res] + st.session_state.custom_tags_qtde_socios
+        ))
+
+        temp_qtdsocio = [opt for opt in all_qtdsocio if opt not in ("(Nulo)", "(Vazio)")]
+        temp_qtdsocio.sort(key=lambda x: int(x) if x.isdigit() else x)
+        if "(Nulo)" in all_qtdsocio: temp_qtdsocio.append("(Nulo)")
+        if "(Vazio)" in all_qtdsocio: temp_qtdsocio.append("(Vazio)")
+
+        default_qtdsocio = [res for res in [safe_int_str(v) for v in top_qtdsocio] if res]
+        default_qtdsocio = [str(x) for x in default_qtdsocio]
+        if include_null_qtdsocio and "(Nulo)" in temp_qtdsocio: default_qtdsocio.append("(Nulo)")
+        if include_empty_qtdsocio and "(Vazio)" in temp_qtdsocio: default_qtdsocio.append("(Vazio)")
+
+        selected_qtdsocio = st.multiselect("Quantidades de Sócios selecionadas:", options=temp_qtdsocio, default=default_qtdsocio, key="ia_qtdsocio_select")
+        ia_params['qtde_socios'] = selected_qtdsocio if selected_qtdsocio else []
+
+        new_qtdsocio = st.text_input("Adicionar nova Quantidade de Sócios:", key="new_qtdsocio_input")
+        if new_qtdsocio and st.button("Adicionar Tag (Qtd Sócios)", key="add_qtdsocio_button"):
+            if new_qtdsocio.strip().isdigit() and new_qtdsocio.strip() not in st.session_state.custom_tags_qtde_socios:
+                st.session_state.custom_tags_qtde_socios.append(new_qtdsocio.strip())
+                st.rerun()
+    else:
+        ia_params['qtde_socios'] = []
+
+
 # --- Nome Sócio / Razão Social ---
 if 'custom_tags_nome_socio' not in st.session_state:
     st.session_state.custom_tags_nome_socio = []
 col1_socio, col2_socio, col3_socio = st.columns([1, 1, 2])
 with col1_socio:
-    use_socio = st.checkbox("Incluir Nome Sócio / Razão Social (similaridade)", value=False)
+    use_socio = st.checkbox("Incluir Nome Sócio / Razão Social", value=False)
 with col2_socio:
     include_null_socio = st.checkbox("Nulo?", key="ia_socio_null") if use_socio else False
     include_empty_socio = st.checkbox("Vazio?", key="ia_socio_empty") if use_socio else False
 with col3_socio:
     if use_socio:
-        unique_socio = df_clientes['nome_socio'].dropna().astype(str).unique().tolist() if 'nome_socio' in df_clientes.columns else []
-        all_socio = list(set(unique_socio + st.session_state.custom_tags_nome_socio))
+        top_n_socio = st.slider("Top N nomes mais frequentes:", min_value=1, max_value=50, value=10, key="ia_top_nome_socio")
+        stop_words_socio = set(unidecode(word.lower()) for word in [
+            "e", "de", "do", "da", "dos", "das", "o", "a", "os", "as", "um", "uma", "uns", "umas",
+            "para", "com", "sem", "em", "no", "na", "nos", "nas", "ao", "aos", "à", "às",
+            "por", "pelo", "pela", "pelos", "pelas", "ou", "nem", "mas", "mais", "menos",
+            "desde", "até", "após", "entre", "sob", "sobre", "ante", "contra"
+        ])
+        top_socio_words = get_top_n_words(df_clientes, 'nomes_socios', top_n_socio, stop_words_socio, include_null=include_null_socio, include_empty=include_empty_socio)
+
+        all_socio = list(set(top_socio_words + st.session_state.custom_tags_nome_socio))
         temp_socio = [opt for opt in all_socio if opt not in ("(Nulo)", "(Vazio)")]
         temp_socio.sort()
         if "(Nulo)" in all_socio: temp_socio.append("(Nulo)")
         if "(Vazio)" in all_socio: temp_socio.append("(Vazio)")
-        default_socio = list(set(unique_socio + st.session_state.custom_tags_nome_socio))
+        default_socio = list(set(top_socio_words + st.session_state.custom_tags_nome_socio))
         if include_null_socio and "(Nulo)" in temp_socio: default_socio.append("(Nulo)")
         if include_empty_socio and "(Vazio)" in temp_socio: default_socio.append("(Vazio)")
+
         selected_socio = st.multiselect("Nomes/Partes de nomes selecionados:", options=temp_socio, default=default_socio, key="ia_nome_socio_select")
         ia_params['nome_socio_razao_social'] = selected_socio if selected_socio else []
+
         new_socio = st.text_input("Adicionar novo Nome Sócio / Razão Social:", key="new_socio_input")
         if new_socio and st.button("Adicionar Tag (Sócio/Razão Social)", key="add_socio_button"):
             if new_socio.strip() not in st.session_state.custom_tags_nome_socio:
@@ -848,7 +928,7 @@ with col2_qs:
 with col3_qs:
     if use_qs:
         top_n_qs = st.slider("Top N Qualificações de Sócio mais frequentes:", min_value=1, max_value=50, value=10, key="ia_top_qs")
-        top_qs = get_unique_values(df_clientes, 'qualificacao_socio', top_n_qs, include_null=include_null_qs, include_empty=include_empty_qs)
+        top_qs = get_unique_values(df_clientes, 'qualificacoes', top_n_qs, include_null=include_null_qs, include_empty=include_empty_qs)
         all_qs = list(set(top_qs + st.session_state.custom_tags_qualificacao_socio))
         temp_qs = [opt for opt in all_qs if opt not in ("(Nulo)", "(Vazio)")]
         temp_qs.sort()
@@ -879,7 +959,7 @@ with col2_faixa:
 with col3_faixa:
     if use_faixa:
         top_n_faixa = st.slider("Top N Faixas Etárias mais frequentes:", min_value=1, max_value=10, value=5, key="ia_top_faixa")
-        top_faixa = get_unique_values(df_clientes, 'faixa_etaria_socio', top_n_faixa, include_null=include_null_faixa, include_empty=include_empty_faixa)
+        top_faixa = get_unique_values(df_clientes, 'faixas_etarias', top_n_faixa, include_null=include_null_faixa, include_empty=include_empty_faixa)
         all_faixa = list(set(top_faixa + st.session_state.custom_tags_faixa_etaria_socio))
         temp_faixa = [opt for opt in all_faixa if opt not in ("(Nulo)", "(Vazio)")]
         temp_faixa.sort()
