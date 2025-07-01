@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 st.set_page_config(layout="wide", page_title="IA Re-Gerador de Leads")
 st.title("🔄 IA Re-Gerador: Reavalie e Gere Novos Leads")
 
-DATABASE_URL = "postgresql+psycopg2://postgres:0804Bru%21%40%23%24@localhost:5432/empresas"
+DATABASE_URL = ""
 
 # --- Inicialização de estados da sessão para o Re-Gerador (independentes) ---
 if 're_gen_current_score' not in st.session_state:
